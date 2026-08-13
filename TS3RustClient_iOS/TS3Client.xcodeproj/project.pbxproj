@@ -337,6 +337,10 @@
 					"-lc++",
 					"-framework",
 					Security,
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					CoreFoundation,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.TS3RustClient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -372,6 +376,10 @@
 					"-lc++",
 					"-framework",
 					Security,
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					CoreFoundation,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.TS3RustClient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
