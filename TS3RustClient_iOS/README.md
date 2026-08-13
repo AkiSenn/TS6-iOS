@@ -26,7 +26,10 @@ TS3RustClient_iOS/
 │   │                          # SettingsViewController
 │   └── Resources/             # Info.plist, Localizable.strings, libs/ts3_rust.h
 ├── TS3Client.xcodeproj
-└── .github/workflows/build.yml
+```
+
+The CI workflow lives at the repository root (GitHub only picks up
+`.github/workflows/` from the root): `.github/workflows/ts3rust-build.yml`.
 ```
 
 ## Current scope
@@ -76,7 +79,7 @@ xcodebuild build \
 
 ### GitHub Actions
 
-Pushes to `main`/`develop` trigger `.github/workflows/build.yml`: it compiles the
+Pushes to `main`/`develop` trigger `.github/workflows/ts3rust-build.yml`: it compiles the
 Rust library for iOS, merges the universal static library, builds the unsigned
 device app, ad-hoc signs it, and packages `TS3RustClient-iOS.ipa`
 (`Payload/TS3RustClient.app`) — installable with TrollStore.

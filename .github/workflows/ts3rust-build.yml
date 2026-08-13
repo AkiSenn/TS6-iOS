@@ -1,18 +1,18 @@
-name: TS3RustClient iOS Build
+name: TS3RustClient iOS Build (ipa)
 
 on:
   push:
     branches: [main, develop]
   pull_request:
+    paths: ['TS3RustClient_iOS/**']
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build TS3RustClient (Rust + simulator app)
+    name: Build TS3RustClient ipa (Rust + device app)
     runs-on: macos-15
     env:
-      # audiopus_sys（tsclientlib 默认 feature）在 CMake 4.x 上需要该兼容开关；
-      # 本库已用 default-features=false 避开，保留作为保险。
+      # tsclientlib 的 audiopus 依赖在 CMake 4.x 上需要该兼容开关。
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
     steps:
@@ -25,22 +25,24 @@ jobs:
           targets: aarch64-apple-ios, x86_64-apple-ios
 
       - name: Build Rust library for iOS
-        working-directory: rust_lib
+        working-directory: TS3RustClient_iOS/rust_lib
         run: |
           cargo build --release --target aarch64-apple-ios
           cargo build --release --target x86_64-apple-ios
 
       - name: Merge universal static library
         run: |
-          mkdir -p TS3Client/Resources/libs
+          mkdir -p TS3RustClient_iOS/TS3Client/Resources/libs
           lipo -create \
-            rust_lib/target/aarch64-apple-ios/release/libts3_rust.a \
-            rust_lib/target/x86_64-apple-ios/release/libts3_rust.a \
-            -output TS3Client/Resources/libs/libts3_rust.a
-          cp rust_lib/include/ts3_rust.h TS3Client/Resources/libs/ts3_rust.h
-          lipo -info TS3Client/Resources/libs/libts3_rust.a
+            TS3RustClient_iOS/rust_lib/target/aarch64-apple-ios/release/libts3_rust.a \
+            TS3RustClient_iOS/rust_lib/target/x86_64-apple-ios/release/libts3_rust.a \
+            -output TS3RustClient_iOS/TS3Client/Resources/libs/libts3_rust.a
+          cp TS3RustClient_iOS/rust_lib/include/ts3_rust.h \
+             TS3RustClient_iOS/TS3Client/Resources/libs/ts3_rust.h
+          lipo -info TS3RustClient_iOS/TS3Client/Resources/libs/libts3_rust.a
 
       - name: Build unsigned .app for device
+        working-directory: TS3RustClient_iOS
         run: |
           xcodebuild build \
             -project TS3Client.xcodeproj \
@@ -52,6 +54,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
       - name: Ad-hoc sign and package .ipa
+        working-directory: TS3RustClient_iOS
         run: |
           APP="build/Build/Products/Release-iphoneos/TS3RustClient.app"
           test -d "$APP" || { echo "App not found at $APP"; exit 1; }
@@ -68,6 +71,6 @@ jobs:
         with:
           name: TS3RustClient-iOS
           path: |
-            TS3RustClient-iOS.ipa
-            TS3RustClient-app.zip
+            TS3RustClient_iOS/TS3RustClient-iOS.ipa
+            TS3RustClient_iOS/TS3RustClient-app.zip
           if-no-files-found: error

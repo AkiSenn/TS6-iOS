@@ -24,7 +24,10 @@ TS3RustClient_iOS/
 │   │                          # SettingsViewController
 │   └── Resources/             # Info.plist, Localizable.strings, libs/ts3_rust.h
 ├── TS3Client.xcodeproj
-└── .github/workflows/build.yml
+```
+
+CI 工作流放在仓库根目录（GitHub 只识别根目录的 `.github/workflows/`）：
+`.github/workflows/ts3rust-build.yml`。
 ```
 
 ## 当前功能
@@ -74,7 +77,7 @@ xcodebuild build \
 
 ### GitHub Actions
 
-推送到 `main`/`develop` 会触发 `.github/workflows/build.yml`：先编译 iOS 版 Rust
+推送到 `main`/`develop` 会触发 `.github/workflows/ts3rust-build.yml`：先编译 iOS 版 Rust
 库，合并通用静态库，构建未签名的真机应用，ad-hoc 签名后打包
 `TS3RustClient-iOS.ipa`（`Payload/TS3RustClient.app`）——TrollStore 可直接安装。
 
