@@ -23,6 +23,9 @@ jobs:
 
       - name: Build Rust static library for iOS
         working-directory: rust/tslib_multi
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          IPHONEOS_DEPLOYMENT_TARGET: "14.0"
         run: cargo build --release --target aarch64-apple-ios -p tslib-ios-ffi
 
       - name: Copy static library into Xcode project
