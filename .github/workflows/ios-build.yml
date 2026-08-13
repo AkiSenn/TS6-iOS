@@ -39,7 +39,7 @@ jobs:
         run: |
           xcodebuild \
             -project TS6.xcodeproj \
-            -target TS6 \
+            -scheme TS6 \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
