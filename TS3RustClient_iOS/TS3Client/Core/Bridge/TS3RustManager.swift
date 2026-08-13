@@ -78,7 +78,7 @@ final class TS3RustManager {
 
     func sendMessage(connectionId: UInt64, message: String) {
         bridgeQueue.async {
-            message.withCString { messagePtr in
+            _ = message.withCString { messagePtr in
                 ts3_send_message(connectionId, messagePtr)
             }
         }
