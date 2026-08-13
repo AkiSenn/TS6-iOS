@@ -14,6 +14,8 @@ jobs:
     env:
       # tsclientlib 的 audiopus 依赖在 CMake 4.x 上需要该兼容开关。
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      # 让 audiopus/opus 的 C 目标按 iOS 14 部署目标编译，避免链接警告。
+      IPHONEOS_DEPLOYMENT_TARGET: "14.0"
 
     steps:
       - name: Checkout

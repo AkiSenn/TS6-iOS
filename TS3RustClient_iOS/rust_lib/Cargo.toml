@@ -6,7 +6,9 @@ license = "MIT OR Apache-2.0"
 description = "C FFI wrapper around ReSpeak/tsclientlib (open-source TeamSpeak 3 protocol)"
 
 [lib]
-crate-type = ["staticlib", "cdylib"]
+# iOS 只需要静态库（App 链接时由 libSystem 提供 ___chkstk_darwin 等符号）；
+# cdylib 会在 iOS 目标上触发最终链接并报未定义符号。
+crate-type = ["staticlib"]
 
 [dependencies]
 # 协议核心：ReSpeak/tsclientlib。
