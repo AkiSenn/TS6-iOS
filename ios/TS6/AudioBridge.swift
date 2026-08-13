@@ -120,11 +120,12 @@ final class AudioBridge {
         for (uid, data) in frames {
             guard let dec = decoder(for: uid) else { continue }
             var pcm = [Int16](repeating: 0, count: frameSamples)
+            let capacity = pcm.count
             let samples = data.withUnsafeBytes { raw -> Int32 in
                 guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
                 return pcm.withUnsafeMutableBufferPointer { p in
                     tslib_opus_decode(dec, base, UInt(data.count),
-                                      p.baseAddress, UInt(pcm.count))
+                                      p.baseAddress, UInt(capacity))
                 }
             }
             guard samples > 0 else { continue }
