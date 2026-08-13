@@ -1,0 +1,408 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		CC0000000000000000000101 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000201 /* AppDelegate.swift */; };
+		CC0000000000000000000102 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000202 /* SceneDelegate.swift */; };
+		CC0000000000000000000103 /* TS3RustManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000203 /* TS3RustManager.swift */; };
+		CC000000000000000000010B /* AudioBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000211 /* AudioBridge.swift */; };
+		CC0000000000000000000104 /* TS3Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000204 /* TS3Logger.swift */; };
+		CC0000000000000000000105 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000205 /* KeychainManager.swift */; };
+		CC0000000000000000000106 /* ServerConfigManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000206 /* ServerConfigManager.swift */; };
+		CC0000000000000000000107 /* LanguageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000207 /* LanguageManager.swift */; };
+		CC0000000000000000000108 /* MainTabBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000208 /* MainTabBarController.swift */; };
+		CC0000000000000000000109 /* ConnectViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000209 /* ConnectViewController.swift */; };
+		CC000000000000000000010A /* SettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000020A /* SettingsViewController.swift */; };
+		CC0000000000000000000110 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000300 /* Localizable.strings */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		CC0000000000000000000201 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		CC0000000000000000000202 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		CC0000000000000000000203 /* TS3RustManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TS3RustManager.swift; sourceTree = "<group>"; };
+		CC0000000000000000000211 /* AudioBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBridge.swift; sourceTree = "<group>"; };
+		CC0000000000000000000204 /* TS3Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TS3Logger.swift; sourceTree = "<group>"; };
+		CC0000000000000000000205 /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
+		CC0000000000000000000206 /* ServerConfigManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigManager.swift; sourceTree = "<group>"; };
+		CC0000000000000000000207 /* LanguageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageManager.swift; sourceTree = "<group>"; };
+		CC0000000000000000000208 /* MainTabBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabBarController.swift; sourceTree = "<group>"; };
+		CC0000000000000000000209 /* ConnectViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectViewController.swift; sourceTree = "<group>"; };
+		CC000000000000000000020A /* SettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewController.swift; sourceTree = "<group>"; };
+		CC000000000000000000020B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		CC000000000000000000020C /* TS3RustClient-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "TS3RustClient-Bridging-Header.h"; sourceTree = "<group>"; };
+		CC000000000000000000020D /* ts3_rust.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ts3_rust.h; sourceTree = "<group>"; };
+		CC000000000000000000020E /* TS3RustClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TS3RustClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC000000000000000000020F /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		CC0000000000000000000210 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		CC0000000000000000000503 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		CC0000000000000000000401 = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000402 /* TS3Client */,
+				CC0000000000000000000403 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000402 /* TS3Client */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000404 /* App */,
+				CC0000000000000000000405 /* Core */,
+				CC0000000000000000000408 /* UI */,
+				CC000000000000000000040A /* Resources */,
+				CC000000000000000000020C /* TS3RustClient-Bridging-Header.h */,
+			);
+			path = TS3Client;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000403 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				CC000000000000000000020E /* TS3RustClient.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000404 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000201 /* AppDelegate.swift */,
+				CC0000000000000000000202 /* SceneDelegate.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000405 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000406 /* Bridge */,
+				CC0000000000000000000407 /* Utils */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000406 /* Bridge */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000203 /* TS3RustManager.swift */,
+				CC0000000000000000000211 /* AudioBridge.swift */,
+			);
+			path = Bridge;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000407 /* Utils */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000204 /* TS3Logger.swift */,
+				CC0000000000000000000205 /* KeychainManager.swift */,
+				CC0000000000000000000206 /* ServerConfigManager.swift */,
+				CC0000000000000000000207 /* LanguageManager.swift */,
+			);
+			path = Utils;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000408 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000208 /* MainTabBarController.swift */,
+				CC0000000000000000000409 /* Connect */,
+				CC000000000000000000040B /* Settings */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000409 /* Connect */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000209 /* ConnectViewController.swift */,
+			);
+			path = Connect;
+			sourceTree = "<group>";
+		};
+		CC000000000000000000040A /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				CC000000000000000000020B /* Info.plist */,
+				CC0000000000000000000300 /* Localizable.strings */,
+				CC000000000000000000040C /* libs */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		CC000000000000000000040B /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				CC000000000000000000020A /* SettingsViewController.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		CC000000000000000000040C /* libs */ = {
+			isa = PBXGroup;
+			children = (
+				CC000000000000000000020D /* ts3_rust.h */,
+			);
+			path = libs;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		CC0000000000000000000601 /* TS3RustClient */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CC0000000000000000000603 /* Build configuration list for PBXNativeTarget "TS3RustClient" */;
+			buildPhases = (
+				CC0000000000000000000502 /* Sources */,
+				CC0000000000000000000503 /* Frameworks */,
+				CC0000000000000000000504 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TS3RustClient;
+			productName = TS3RustClient;
+			productReference = CC000000000000000000020E /* TS3RustClient.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		CC0000000000000000000701 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					CC0000000000000000000601 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = CC0000000000000000000602 /* Build configuration list for PBXProject "TS3RustClient" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				"zh-Hans",
+				Base,
+			);
+			mainGroup = CC0000000000000000000401;
+			productRefGroup = CC0000000000000000000403 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				CC0000000000000000000601 /* TS3RustClient */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		CC0000000000000000000504 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC0000000000000000000110 /* Localizable.strings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		CC0000000000000000000502 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC0000000000000000000101 /* AppDelegate.swift in Sources */,
+				CC0000000000000000000102 /* SceneDelegate.swift in Sources */,
+				CC0000000000000000000103 /* TS3RustManager.swift in Sources */,
+				CC000000000000000000010B /* AudioBridge.swift in Sources */,
+				CC0000000000000000000104 /* TS3Logger.swift in Sources */,
+				CC0000000000000000000105 /* KeychainManager.swift in Sources */,
+				CC0000000000000000000106 /* ServerConfigManager.swift in Sources */,
+				CC0000000000000000000107 /* LanguageManager.swift in Sources */,
+				CC0000000000000000000108 /* MainTabBarController.swift in Sources */,
+				CC0000000000000000000109 /* ConnectViewController.swift in Sources */,
+				CC000000000000000000010A /* SettingsViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXVariantGroup section */
+		CC0000000000000000000300 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				CC000000000000000000020F /* en */,
+				CC0000000000000000000210 /* zh-Hans */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		CC0000000000000000000801 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		CC0000000000000000000802 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		CC0000000000000000000803 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/TS3Client/Resources/libs",
+				);
+				INFOPLIST_FILE = TS3Client/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-L$(PROJECT_DIR)/TS3Client/Resources/libs",
+					"-lts3_rust",
+					"-lc++",
+					"-framework",
+					Security,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.TS3RustClient;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = TS3Client/TS3RustClient-Bridging-Header.h;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		CC0000000000000000000804 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/TS3Client/Resources/libs",
+				);
+				INFOPLIST_FILE = TS3Client/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-L$(PROJECT_DIR)/TS3Client/Resources/libs",
+					"-lts3_rust",
+					"-lc++",
+					"-framework",
+					Security,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.TS3RustClient;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = TS3Client/TS3RustClient-Bridging-Header.h;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		CC0000000000000000000602 /* Build configuration list for PBXProject "TS3RustClient" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC0000000000000000000801 /* Debug */,
+				CC0000000000000000000802 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CC0000000000000000000603 /* Build configuration list for PBXNativeTarget "TS3RustClient" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC0000000000000000000803 /* Debug */,
+				CC0000000000000000000804 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = CC0000000000000000000701 /* Project object */;
+}

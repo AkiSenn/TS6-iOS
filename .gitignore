@@ -7,6 +7,11 @@ ios/RustLib/
 # Xcode derived data
 ios/build/
 
+# TS3RustClient_iOS build outputs
+TS3RustClient_iOS/rust_lib/target/
+TS3RustClient_iOS/TS3Client/Resources/libs/libts3_rust.a
+TS3RustClient_iOS/build/
+
 # Reference clones (not part of this project)
 reference/
 

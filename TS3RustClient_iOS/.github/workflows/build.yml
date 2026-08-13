@@ -1,0 +1,73 @@
+name: TS3RustClient iOS Build
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build TS3RustClient (Rust + simulator app)
+    runs-on: macos-15
+    env:
+      # audiopus_sys（tsclientlib 默认 feature）在 CMake 4.x 上需要该兼容开关；
+      # 本库已用 default-features=false 避开，保留作为保险。
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust with iOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, x86_64-apple-ios
+
+      - name: Build Rust library for iOS
+        working-directory: rust_lib
+        run: |
+          cargo build --release --target aarch64-apple-ios
+          cargo build --release --target x86_64-apple-ios
+
+      - name: Merge universal static library
+        run: |
+          mkdir -p TS3Client/Resources/libs
+          lipo -create \
+            rust_lib/target/aarch64-apple-ios/release/libts3_rust.a \
+            rust_lib/target/x86_64-apple-ios/release/libts3_rust.a \
+            -output TS3Client/Resources/libs/libts3_rust.a
+          cp rust_lib/include/ts3_rust.h TS3Client/Resources/libs/ts3_rust.h
+          lipo -info TS3Client/Resources/libs/libts3_rust.a
+
+      - name: Build unsigned .app for device
+        run: |
+          xcodebuild build \
+            -project TS3Client.xcodeproj \
+            -scheme TS3RustClient \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Ad-hoc sign and package .ipa
+        run: |
+          APP="build/Build/Products/Release-iphoneos/TS3RustClient.app"
+          test -d "$APP" || { echo "App not found at $APP"; exit 1; }
+          codesign --force --deep --sign - "$APP"
+          rm -rf Payload
+          mkdir -p Payload
+          ditto "$APP" "Payload/TS3RustClient.app"
+          ditto -c -k --sequesterRsrc --keepParent Payload TS3RustClient-iOS.ipa
+          rm -rf Payload
+          ditto -c -k --sequesterRsrc --keepParent "$APP" TS3RustClient-app.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TS3RustClient-iOS
+          path: |
+            TS3RustClient-iOS.ipa
+            TS3RustClient-app.zip
+          if-no-files-found: error

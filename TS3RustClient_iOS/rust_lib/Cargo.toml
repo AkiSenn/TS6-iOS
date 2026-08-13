@@ -1,0 +1,25 @@
+[package]
+name = "ts3-rust"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "C FFI wrapper around ReSpeak/tsclientlib (open-source TeamSpeak 3 protocol)"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+# 协议核心：ReSpeak/tsclientlib。
+# audio feature：提供 StreamItem::Audio（语音接收）；会引入 audiopus，
+# 其 CMake 构建在 CI 里由 CMAKE_POLICY_VERSION_MINIMUM=3.5 兼容。
+tsclientlib = { git = "https://github.com/ReSpeak/tsclientlib.git", default-features = false, features = ["audio"] }
+tsproto-packets = { git = "https://github.com/ReSpeak/tsclientlib.git" }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-log = "0.2"
+opus = "0.3"
+
+[build-dependencies]
+cbindgen = "0.26"
