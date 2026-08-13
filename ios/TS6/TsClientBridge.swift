@@ -106,7 +106,7 @@ final class TsClientBridge {
         guard let client = client else { return }
         data.withUnsafeBytes { raw in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-            _ = tslib_client_send_audio(client, base, UInt(data.count), 4)
+            _ = tslib_client_send_audio_async(client, base, UInt(data.count), 4)
         }
     }
 

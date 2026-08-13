@@ -206,6 +206,10 @@ enum ClientCmd {
         codec: u8,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    SendAudioAsync {
+        data: Vec<u8>,
+        codec: u8,
+    },
     SetInputMuted {
         muted: bool,
         reply: mpsc::Sender<Result<(), String>>,
@@ -465,6 +469,10 @@ fn client_worker(
                     let codec = AudioCodec::from_id(codec).unwrap_or(AudioCodec::OpusVoice);
                     let _ = reply.send(client.send_audio(&data, codec).map_err(|e| e.to_string()));
                 }
+                ClientCmd::SendAudioAsync { data, codec } => {
+                    let codec = AudioCodec::from_id(codec).unwrap_or(AudioCodec::OpusVoice);
+                    let _ = client.send_audio(&data, codec);
+                }
                 ClientCmd::SetInputMuted { muted, reply } => {
                     let _ = reply.send(client.set_input_muted(muted).map_err(|e| e.to_string()));
                 }
@@ -648,6 +656,36 @@ pub unsafe extern "C" fn tslib_client_send_audio(
         codec: codec as u8,
         reply,
     })
+}
+
+/// Send an encoded audio frame without waiting for the worker thread to
+/// process it. Safe to call from real-time audio threads.
+///
+/// # Safety
+/// `data` must point to `len` valid bytes.
+#[no_mangle]
+pub unsafe extern "C" fn tslib_client_send_audio_async(
+    client: *mut TsClient,
+    data: *const c_uchar,
+    len: usize,
+    codec: c_int,
+) -> TsLibError {
+    if client.is_null() || data.is_null() {
+        return TsLibError::InvalidArgument;
+    }
+    let bytes = std::slice::from_raw_parts(data, len).to_vec();
+    let inner = &*(client as *const InnerTsClient);
+    if inner
+        .cmd_tx
+        .send(ClientCmd::SendAudioAsync {
+            data: bytes,
+            codec: codec as u8,
+        })
+        .is_err()
+    {
+        return TsLibError::NotConnected;
+    }
+    TsLibError::Ok
 }
 
 /// Notify the server whether our microphone is muted.
@@ -969,5 +1007,70 @@ pub unsafe extern "C" fn tslib_opus_decode(
 pub unsafe extern "C" fn tslib_opus_destroy(codec: *mut TsOpus) {
     if !codec.is_null() {
         drop(Box::from_raw(codec as *mut InnerOpus));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opus_roundtrip_via_ffi() {
+        unsafe {
+            let codec = tslib_opus_create(48000, 1, 48000, 20);
+            assert!(!codec.is_null());
+
+            let pcm: Vec<i16> = (0..960).map(|i| ((i % 1000) - 500) as i16).collect();
+            let mut encoded = vec![0u8; 2048];
+            let n = tslib_opus_encode(
+                codec,
+                pcm.as_ptr(),
+                pcm.len(),
+                encoded.as_mut_ptr(),
+                encoded.len(),
+            );
+            assert!(n > 0, "encode failed: {n}");
+
+            let mut decoded = vec![0i16; 960];
+            let m = tslib_opus_decode(
+                codec,
+                encoded.as_ptr(),
+                n as usize,
+                decoded.as_mut_ptr(),
+                decoded.len(),
+            );
+            assert!(m > 0, "decode failed: {m}");
+
+            tslib_opus_destroy(codec);
+        }
+    }
+
+    #[test]
+    fn connect_failure_emits_error_event() {
+        unsafe {
+            let identity = tslib_identity_create();
+            assert!(!identity.is_null());
+
+            let address = CString::new("127.0.0.1:1").unwrap();
+            let nickname = CString::new("ffi-test").unwrap();
+            let client = tslib_client_connect(
+                address.as_ptr(),
+                identity,
+                nickname.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+            );
+            assert!(!client.is_null());
+
+            std::thread::sleep(Duration::from_millis(800));
+
+            let ptr = tslib_client_poll_event(client);
+            assert!(!ptr.is_null(), "expected an error event from failed connect");
+            tslib_string_free(ptr);
+
+            tslib_client_free(client);
+            tslib_identity_free(identity);
+        }
     }
 }

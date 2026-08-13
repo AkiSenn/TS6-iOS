@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 final class AppModel: ObservableObject {
     @Published var state: ConnState = .disconnected
@@ -47,6 +48,16 @@ final class AppModel: ObservableObject {
         }
         bridge.onAudio = { [weak self] uid, codec, data in
             self?.audio.handleIncoming(userId: uid, codec: codec, data: data)
+        }
+
+        // Clean up the TeamSpeak connection on app termination so the server
+        // doesn't keep a stale client alive after we exit.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.bridge.disconnect()
         }
     }
 

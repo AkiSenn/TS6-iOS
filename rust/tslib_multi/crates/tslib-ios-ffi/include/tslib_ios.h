@@ -159,6 +159,18 @@ enum TsLibError tslib_client_send_audio(struct TsClient *client,
                                         int codec);
 
 /**
+ * Send an encoded audio frame without waiting for the worker thread to
+ * process it. Safe to call from real-time audio threads.
+ *
+ * # Safety
+ * `data` must point to `len` valid bytes.
+ */
+enum TsLibError tslib_client_send_audio_async(struct TsClient *client,
+                                              const unsigned char *data,
+                                              uintptr_t len,
+                                              int codec);
+
+/**
  * Notify the server whether our microphone is muted.
  */
 enum TsLibError tslib_client_set_input_muted(struct TsClient *client, int muted);
