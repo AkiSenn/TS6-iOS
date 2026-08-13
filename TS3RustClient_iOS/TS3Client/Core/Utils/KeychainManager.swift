@@ -2,6 +2,7 @@
 //
 // 简单 Keychain 封装：保存/读取/删除字符串（服务器密码等敏感信息）。
 
+import Foundation
 import Security
 
 enum KeychainManager {

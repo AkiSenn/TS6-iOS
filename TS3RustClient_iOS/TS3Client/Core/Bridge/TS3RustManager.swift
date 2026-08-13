@@ -55,7 +55,7 @@ final class TS3RustManager {
         bridgeQueue.async {
             let id = server.withCString { serverPtr in
                 nickname.withCString { nickPtr in
-                    password.withCStringOrNil { pwdPtr in
+                    password.withCString { pwdPtr in
                         ts3_connect(serverPtr, port, nickPtr, pwdPtr)
                     }
                 }
