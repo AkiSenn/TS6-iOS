@@ -1,0 +1,1454 @@
+//! Main client implementation using tsclientlib
+//!
+//! The client wraps tsclientlib's Connection and provides a higher-level API.
+//! Note: The client is not Send/Sync due to tsclientlib limitations.
+
+use crate::config::ClientConfig;
+use crate::connection::ConnectionState;
+use crate::error::{ConnectionError, Error, Result};
+use crate::events::{AudioCodec, Event, EventHandler};
+use crate::state::{Channel, ServerState, User};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::broadcast;
+use tracing::{debug, info, warn};
+
+use futures::StreamExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tsclientlib::prelude::*;
+use tsclientlib::{Connection as TsConnection, DisconnectOptions, InMessage, Reason, StreamItem, ClientId, ChannelId};
+use tsclientlib::MessageTarget as TsMessageTarget;
+use tsclientlib::data::{Client as TsClient, Channel as TsChannel};
+use tsclientlib::events::{Event as TsEvent, PropertyId};
+use tsproto_types::{ChannelType as TsChannelType, ClientType as TsClientType, Codec as TsCodec};
+use tsproto_types::errors::Error as TsError;
+use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, PacketType};
+
+/// A file entry from a channel's file list
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub name: String,
+    pub size: u64,
+    pub datetime: i64,
+    pub is_file: bool,
+}
+
+/// The main TeamSpeak client
+///
+/// This client wraps tsclientlib's Connection. Due to tsclientlib's design,
+/// the client is not Send/Sync and must be used from a single task.
+///
+/// Use `process_events()` to poll for and handle server events.
+/// Duration after which a user is considered to have stopped talking (ms)
+const TALK_TIMEOUT_MS: u128 = 300;
+
+pub struct Client {
+    /// The tsclientlib connection
+    connection: Option<TsConnection>,
+    /// Configuration
+    config: ClientConfig,
+    /// Current connection state
+    state: ConnectionState,
+    /// Server state (channels, users, etc.)
+    server_state: ServerState,
+    /// Event broadcaster
+    event_tx: broadcast::Sender<Event>,
+    /// Event handlers
+    handlers: Vec<Arc<dyn EventHandler>>,
+    /// Our client ID on the server
+    client_id: Option<u16>,
+    /// Current channel ID
+    channel_id: Option<u64>,
+    /// Audio packet sequence number
+    audio_sequence: u16,
+    /// Track which users are currently talking (user_id -> last audio timestamp)
+    talking_users: HashMap<u16, Instant>,
+    /// Pending file downloads: FiletransferHandle id -> (channel_id, path)
+    pending_downloads: HashMap<u16, (u64, String)>,
+    /// Pending file uploads: FiletransferHandle id -> (channel_id, path, data)
+    pending_uploads: HashMap<u16, (u64, String, Vec<u8>)>,
+    /// Local override for our own input muted state.
+    /// tsclientlib's state book doesn't reflect our clientupdate commands
+    /// (the server doesn't echo them back), so we track it separately.
+    self_input_muted: Option<bool>,
+    /// Pending file list request: accumulates entries until FileListFinished
+    pending_file_list: Option<(u64, String, Vec<FileEntry>)>,
+    /// Pending permoverview request: accumulates permission entries
+    /// (channel_id, HashMap<permission_id, max_value>)
+    pending_perm_overview: Option<(u64, HashMap<u32, i32>)>,
+}
+
+impl Client {
+    /// Connect to a TeamSpeak server
+    pub fn connect(config: ClientConfig) -> Result<Self> {
+        info!("Connecting to {}", config.address);
+
+        // Create event broadcaster
+        let (event_tx, _) = broadcast::channel(256);
+
+        let mut client = Self {
+            connection: None,
+            config: config.clone(),
+            state: ConnectionState::Disconnected,
+            server_state: ServerState::default(),
+            event_tx,
+            handlers: Vec::new(),
+            client_id: None,
+            channel_id: None,
+            audio_sequence: 0,
+            talking_users: HashMap::new(),
+            pending_downloads: HashMap::new(),
+            pending_uploads: HashMap::new(),
+            self_input_muted: None,
+            pending_file_list: None,
+            pending_perm_overview: None,
+        };
+
+        // Establish connection
+        client.do_connect()?;
+
+        Ok(client)
+    }
+
+    /// Perform the actual connection to the server
+    fn do_connect(&mut self) -> Result<()> {
+        self.state = ConnectionState::Connecting;
+
+        // Build connection options using the new API
+        let mut options = TsConnection::build(self.config.address.clone())
+            .name(self.config.nickname.clone())
+            .identity(self.config.identity.to_ts_identity());
+
+        // Add password if specified
+        if let Some(ref password) = self.config.password {
+            options = options.password(password.clone());
+        }
+
+        // Add channel if specified
+        if let Some(ref channel) = self.config.channel {
+            options = options.channel(channel.clone());
+        }
+
+        // Connect
+        let con = options
+            .connect()
+            .map_err(|e| ConnectionError::ConnectFailed(e.to_string()))?;
+
+        self.connection = Some(con);
+        self.state = ConnectionState::Connected;
+
+        info!("Connected to {}", self.config.address);
+
+        // Emit connected event
+        let _ = self.event_tx.send(Event::Connected {
+            server_name: String::new(), // Will be updated from server data
+            welcome_message: None,
+        });
+
+        Ok(())
+    }
+
+    /// Process pending events from the server
+    ///
+    /// This method must be called regularly to receive server events.
+    /// Returns a vector of events that occurred.
+    pub async fn process_events(&mut self) -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+        let mut stream_items = Vec::new();
+        let mut disconnected = false;
+
+        // First, collect all pending stream items
+        {
+            let con = self
+                .connection
+                .as_mut()
+                .ok_or(ConnectionError::NotConnected)?;
+
+            // Process events with a short timeout
+            let timeout = tokio::time::Duration::from_millis(10);
+
+            loop {
+                match tokio::time::timeout(timeout, con.events().next()).await {
+                    Ok(Some(Ok(item))) => {
+                        stream_items.push(item);
+                    }
+                    Ok(Some(Err(e))) => {
+                        warn!("Event stream error: {}", e);
+                        break;
+                    }
+                    Ok(None) => {
+                        // Stream ended, connection closed
+                        disconnected = true;
+                        break;
+                    }
+                    Err(_) => {
+                        // Timeout, no more events for now
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Now process the collected items
+        for item in stream_items {
+            events.extend(self.process_stream_item(item).await);
+        }
+
+        if disconnected {
+            self.state = ConnectionState::Disconnected;
+            let event = Event::Disconnected {
+                reason: "Connection closed".to_string(),
+            };
+            let _ = self.event_tx.send(event.clone());
+            events.push(event);
+        }
+
+        // Check for talk status timeouts
+        let talk_stop_events = self.check_talk_timeouts();
+        events.extend(talk_stop_events);
+
+        // Dispatch events to handlers
+        for event in &events {
+            self.dispatch_event(event.clone()).await;
+        }
+
+        Ok(events)
+    }
+
+    /// Check for users who have stopped talking (no audio received recently)
+    fn check_talk_timeouts(&mut self) -> Vec<Event> {
+        let now = Instant::now();
+        let mut stopped_users = Vec::new();
+
+        // Find users who haven't sent audio recently
+        self.talking_users.retain(|&user_id, last_audio| {
+            let elapsed = now.duration_since(*last_audio).as_millis();
+            if elapsed > TALK_TIMEOUT_MS {
+                stopped_users.push(user_id);
+                false // Remove from tracking
+            } else {
+                true // Keep tracking
+            }
+        });
+
+        // Generate TalkStatusStop events
+        stopped_users
+            .into_iter()
+            .map(|user_id| {
+                debug!("User {} stopped talking", user_id);
+                let event = Event::TalkStatusStop { user_id };
+                let _ = self.event_tx.send(event.clone());
+                event
+            })
+            .collect()
+    }
+
+    /// Wait for the initial connection to be established
+    ///
+    /// This waits until we receive the first BookEvents, indicating
+    /// the connection is fully established. It also automatically
+    /// subscribes to all channels and synchronizes the server state
+    /// (users, channels, etc.).
+    pub async fn wait_connected(&mut self) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        // Poll events one by one without filtering, so we don't
+        // discard non-BookEvents items (messages, audio, etc.)
+        loop {
+            match con.events().next().await {
+                Some(Ok(item)) => {
+                    if matches!(item, StreamItem::BookEvents(_)) {
+                        break;
+                    }
+                    // Other events during connection setup are expected; just skip them
+                }
+                Some(Err(e)) => {
+                    return Err(ConnectionError::ConnectFailed(e.to_string()).into());
+                }
+                None => {
+                    return Err(
+                        ConnectionError::ConnectFailed("Connection closed".to_string()).into(),
+                    );
+                }
+            }
+        }
+
+        // Update connection state
+        self.state = ConnectionState::Connected;
+
+        // Subscribe to all channels so we can see all users
+        self.subscribe_all_channels()?;
+
+        // Synchronize full state from server
+        self.sync_state()?;
+
+        // Emit connected event
+        let _ = self.event_tx.send(Event::Connected {
+            server_name: self.server_state.server.name.clone(),
+            welcome_message: self.server_state.server.welcome_message.clone(),
+        });
+
+        info!(
+            "Connected to {} - {} users, {} channels",
+            self.server_state.server.name,
+            self.server_state.users.len(),
+            self.server_state.channels.len()
+        );
+
+        // Default to input muted (PTT mode) so other clients see the mute icon
+        if let Err(e) = self.set_input_muted(true) {
+            warn!("Failed to set initial input muted state: {}", e);
+        }
+
+        Ok(())
+    }
+
+    /// Subscribe to all channels on the server
+    ///
+    /// This makes all users visible regardless of which channel they are in.
+    pub fn subscribe_all_channels(&mut self) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        let cmd = OutCommand::new(
+            Direction::C2S,
+            Flags::empty(),
+            PacketType::Command,
+            "channelsubscribeall",
+        );
+
+        cmd.send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        debug!("Subscribed to all channels");
+        Ok(())
+    }
+
+    /// Process a stream item from tsclientlib
+    ///
+    /// Returns all events generated by this stream item (may be multiple,
+    /// e.g. TalkStatusStart + AudioReceived, or multiple BookEvents).
+    async fn process_stream_item(&mut self, item: StreamItem) -> Vec<Event> {
+        match item {
+            StreamItem::BookEvents(book_events) => {
+                // Process book events (client/channel changes)
+                let mut events = Vec::new();
+                for event in book_events {
+                    if let Some(evt) = self.process_book_event(event) {
+                        // Send via broadcast channel
+                        let _ = self.event_tx.send(evt.clone());
+                        events.push(evt);
+                    }
+                }
+                events
+            }
+            StreamItem::Audio(audio) => {
+                // Audio received - extract data from InAudioBuf
+                let audio_data = audio.data().data();
+                let (from_id, codec, data) = match audio_data {
+                    AudioData::S2C { from, codec, data, .. } => (*from, *codec, data),
+                    AudioData::S2CWhisper { from, codec, data, .. } => (*from, *codec, data),
+                    _ => return Vec::new(), // C2S packets should not be received
+                };
+
+                let mut events = Vec::new();
+
+                // Check if this is a new talk session (user wasn't talking before)
+                let was_talking = self.talking_users.contains_key(&from_id);
+                self.talking_users.insert(from_id, Instant::now());
+
+                if !was_talking {
+                    // Emit TalkStatusStart — both via broadcast AND in returned events
+                    let start_event = Event::TalkStatusStart { user_id: from_id };
+                    let _ = self.event_tx.send(start_event.clone());
+                    events.push(start_event);
+                    debug!("User {} started talking", from_id);
+                }
+
+                let event = Event::AudioReceived {
+                    user_id: from_id,
+                    codec: codec_type_to_audio_codec(codec),
+                    data: data.to_vec(),
+                };
+                let _ = self.event_tx.send(event.clone());
+                events.push(event);
+                events
+            }
+            StreamItem::DisconnectedTemporarily(_reason) => {
+                self.state = ConnectionState::Reconnecting;
+                let event = Event::ConnectionLost {
+                    reason: "Temporary disconnect".to_string(),
+                };
+                let _ = self.event_tx.send(event.clone());
+                vec![event]
+            }
+            StreamItem::MessageEvent(msg) => {
+                log::info!("StreamItem::MessageEvent: cmd={:?}", msg.get_command_name());
+                self.process_message_event(msg).into_iter().collect()
+            }
+            StreamItem::FileDownload(handle, mut result) => {
+                let (channel_id, path) = self
+                    .pending_downloads
+                    .remove(&handle.0)
+                    .unwrap_or((0, String::new()));
+
+                // Cap download size at 10MB for safety
+                let size = result.size.min(10_485_760) as usize;
+                info!("FileDownload received: path={}, size={}", path, size);
+                let mut data = vec![0u8; size];
+
+                // Timeout the read to avoid blocking the event loop
+                let read_timeout = tokio::time::Duration::from_secs(5);
+                match tokio::time::timeout(read_timeout, result.stream.read_exact(&mut data)).await {
+                    Ok(Ok(_)) => {
+                        info!("File downloaded: path={}, size={}", path, size);
+                        let event = Event::FileDownloaded {
+                            channel_id,
+                            path,
+                            data,
+                        };
+                        let _ = self.event_tx.send(event.clone());
+                        vec![event]
+                    }
+                    Ok(Err(e)) => {
+                        warn!("File download read failed: {}", e);
+                        let event = Event::FileTransferFailed {
+                            path,
+                            error: e.to_string(),
+                        };
+                        let _ = self.event_tx.send(event.clone());
+                        vec![event]
+                    }
+                    Err(_) => {
+                        warn!("File download read timed out: path={}", path);
+                        let event = Event::FileTransferFailed {
+                            path,
+                            error: "Read timed out".to_string(),
+                        };
+                        let _ = self.event_tx.send(event.clone());
+                        vec![event]
+                    }
+                }
+            }
+            StreamItem::FileUpload(handle, mut result) => {
+                if let Some((channel_id, path, data)) = self.pending_uploads.remove(&handle.0) {
+                    let offset = result.seek_position as usize;
+                    let to_write = &data[offset.min(data.len())..];
+                    let write_timeout = tokio::time::Duration::from_secs(10);
+                    match tokio::time::timeout(write_timeout, result.stream.write_all(to_write)).await {
+                        Ok(Ok(_)) => {
+                            info!("Upload complete: {} ({} bytes)", path, data.len());
+                            let event = Event::FileUploaded { channel_id, path };
+                            let _ = self.event_tx.send(event.clone());
+                            vec![event]
+                        }
+                        Ok(Err(e)) => {
+                            warn!("Upload write failed: {} — {}", path, e);
+                            let event = Event::FileTransferFailed {
+                                path,
+                                error: e.to_string(),
+                            };
+                            let _ = self.event_tx.send(event.clone());
+                            vec![event]
+                        }
+                        Err(_) => {
+                            warn!("Upload write timed out: path={}", path);
+                            let event = Event::FileTransferFailed {
+                                path,
+                                error: "Write timed out".to_string(),
+                            };
+                            let _ = self.event_tx.send(event.clone());
+                            vec![event]
+                        }
+                    }
+                } else {
+                    Vec::new()
+                }
+            }
+            StreamItem::FiletransferFailed(handle, error) => {
+                // Check downloads first, then uploads
+                let (_channel_id, path) = self
+                    .pending_downloads
+                    .remove(&handle.0)
+                    .or_else(|| self.pending_uploads.remove(&handle.0).map(|(ch, p, _)| (ch, p)))
+                    .unwrap_or((0, String::new()));
+
+                warn!("File transfer failed: path={}, error={}", path, error);
+                let event = Event::FileTransferFailed {
+                    path,
+                    error: error.to_string(),
+                };
+                let _ = self.event_tx.send(event.clone());
+                vec![event]
+            }
+            other => {
+                debug!("Unhandled StreamItem variant: {:?}", std::mem::discriminant(&other));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Process a book event and return any high-level events to emit
+    fn process_book_event(&mut self, event: TsEvent) -> Option<Event> {
+        match &event {
+            TsEvent::PropertyAdded { id, .. } => {
+                debug!("Property added: {:?}", id);
+                self.handle_property_added(id)
+            }
+            TsEvent::PropertyChanged { id, old, .. } => {
+                debug!("Property changed: {:?}", id);
+                self.handle_property_changed(id, old)
+            }
+            TsEvent::PropertyRemoved { id, old, .. } => {
+                debug!("Property removed: {:?}", id);
+                self.handle_property_removed(id, old)
+            }
+            TsEvent::Message { target, invoker, message } => {
+                match target {
+                    TsMessageTarget::Poke(_) => {
+                        let event = Event::Poked {
+                            poker_id: invoker.id.0,
+                            poker_name: invoker.name.clone(),
+                            message: message.clone(),
+                        };
+                        debug!("Poked by {} ({}): {}", invoker.name, invoker.id.0, message);
+                        Some(event)
+                    }
+                    _ => {
+                        let msg_target = match target {
+                            TsMessageTarget::Server => crate::events::MessageTarget::Server,
+                            TsMessageTarget::Channel => crate::events::MessageTarget::Channel,
+                            TsMessageTarget::Client(_) => crate::events::MessageTarget::Private,
+                            TsMessageTarget::Poke(_) => unreachable!(),
+                        };
+                        let event = Event::TextMessage {
+                            sender_id: invoker.id.0,
+                            sender_name: invoker.name.clone(),
+                            message: message.clone(),
+                            target: msg_target,
+                        };
+                        debug!(
+                            "Text message from {} ({}): {}",
+                            invoker.name, invoker.id.0, message
+                        );
+                        Some(event)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle a property being added (new client, channel, etc.)
+    fn handle_property_added(&mut self, id: &PropertyId) -> Option<Event> {
+        let con = self.connection.as_ref()?;
+        let state = con.get_state().ok()?;
+
+        match id {
+            PropertyId::Client(client_id) => {
+                // New client connected
+                if let Some(ts_client) = state.clients.get(client_id) {
+                    let user = ts_client_to_user(ts_client);
+                    self.server_state.users.insert(user.id, user.clone());
+                    info!("User joined: {} ({})", user.nickname, user.id);
+                    return Some(Event::UserJoined { user });
+                }
+            }
+            PropertyId::Channel(channel_id) => {
+                // New channel created
+                if let Some(ts_channel) = state.channels.get(channel_id) {
+                    let mut channel = ts_channel_to_channel(ts_channel);
+                    // Preserve our computed permission_hints (tsclientlib doesn't track permoverview results)
+                    if channel.permission_hints == 0 {
+                        if let Some(existing) = self.server_state.channels.get(&channel.id) {
+                            channel.permission_hints = existing.permission_hints;
+                        }
+                    }
+                    self.server_state.channels.insert(channel.id, channel.clone());
+                    info!("Channel created: {} ({})", channel.name, channel.id);
+                    return Some(Event::ChannelCreated { channel });
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Handle a property being changed
+    fn handle_property_changed(&mut self, id: &PropertyId, _old: &tsclientlib::events::PropertyValue) -> Option<Event> {
+        let con = self.connection.as_ref()?;
+        let state = con.get_state().ok()?;
+
+        match id {
+            PropertyId::ClientChannel(client_id) => {
+                // Client moved to a different channel
+                if let Some(ts_client) = state.clients.get(client_id) {
+                    let user = ts_client_to_user(ts_client);
+                    let from_channel = self.server_state.users
+                        .get(&user.id)
+                        .map(|u| u.channel_id)
+                        .unwrap_or(0);
+
+                    self.server_state.users.insert(user.id, user.clone());
+
+                    if from_channel != user.channel_id {
+                        info!("User {} moved from channel {} to {}", user.nickname, from_channel, user.channel_id);
+                        return Some(Event::UserMoved {
+                            user,
+                            from_channel,
+                            to_channel: ts_client.channel.0,
+                        });
+                    }
+                }
+            }
+            PropertyId::ClientName(client_id) |
+            PropertyId::ClientInputMuted(client_id) |
+            PropertyId::ClientOutputMuted(client_id) |
+            PropertyId::ClientAwayMessage(client_id) |
+            PropertyId::ClientTalkPower(client_id) |
+            PropertyId::ClientTalkPowerGranted(client_id) |
+            PropertyId::ClientIsRecording(client_id) => {
+                // Client property changed - update our state
+                if let Some(ts_client) = state.clients.get(client_id) {
+                    let user = ts_client_to_user(ts_client);
+                    self.server_state.users.insert(user.id, user.clone());
+                    return Some(Event::UserUpdated { user });
+                }
+            }
+            PropertyId::ChannelName(channel_id) |
+            PropertyId::ChannelTopic(channel_id) |
+            PropertyId::ChannelCodec(channel_id) |
+            PropertyId::ChannelMaxClients(channel_id) |
+            PropertyId::ChannelNeededTalkPower(channel_id) => {
+                // Channel property changed
+                if let Some(ts_channel) = state.channels.get(channel_id) {
+                    let mut channel = ts_channel_to_channel(ts_channel);
+                    // Preserve our computed permission_hints
+                    if channel.permission_hints == 0 {
+                        if let Some(existing) = self.server_state.channels.get(&channel.id) {
+                            channel.permission_hints = existing.permission_hints;
+                        }
+                    }
+                    self.server_state.channels.insert(channel.id, channel.clone());
+                    return Some(Event::ChannelEdited { channel });
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Handle a property being removed (client left, channel deleted, etc.)
+    fn handle_property_removed(&mut self, id: &PropertyId, _old: &tsclientlib::events::PropertyValue) -> Option<Event> {
+        match id {
+            PropertyId::Client(client_id) => {
+                // Client disconnected
+                if let Some(user) = self.server_state.users.remove(&client_id.0) {
+                    info!("User left: {} ({})", user.nickname, user.id);
+                    return Some(Event::UserLeft {
+                        user,
+                        reason: "Disconnected".to_string(),
+                    });
+                }
+            }
+            PropertyId::Channel(channel_id) => {
+                // Channel deleted
+                if self.server_state.channels.remove(&channel_id.0).is_some() {
+                    info!("Channel deleted: {}", channel_id.0);
+                    return Some(Event::ChannelDeleted {
+                        channel_id: channel_id.0,
+                    });
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Synchronize the full state from tsclientlib
+    /// Call this after connection to populate initial state
+    pub fn sync_state(&mut self) -> Result<()> {
+        let con = self.connection.as_ref().ok_or(ConnectionError::NotConnected)?;
+        let state = con.get_state().map_err(|e| Error::Internal(e.to_string()))?;
+
+        // Clear existing state
+        self.server_state.users.clear();
+        self.server_state.channels.clear();
+
+        // Sync server info
+        self.server_state.server.name = state.server.name.clone();
+        self.server_state.server.welcome_message = Some(state.server.welcome_message.clone());
+        self.server_state.server.platform = state.server.platform.clone();
+        self.server_state.server.version = state.server.version.clone();
+        self.server_state.server.max_clients = state.server.max_clients as u32;
+        self.server_state.server.icon_id = state.server.icon.0 as i64;
+
+        // Sync all channels (preserve computed permission_hints)
+        let old_hints: HashMap<u64, u64> = self.server_state.channels.iter()
+            .filter(|(_, ch)| ch.permission_hints != 0)
+            .map(|(&id, ch)| (id, ch.permission_hints))
+            .collect();
+        for (_, ts_channel) in &state.channels {
+            let mut channel = ts_channel_to_channel(ts_channel);
+            if channel.permission_hints == 0 {
+                if let Some(&hints) = old_hints.get(&channel.id) {
+                    channel.permission_hints = hints;
+                }
+            }
+            self.server_state.channels.insert(channel.id, channel);
+        }
+
+        // Sync all clients
+        for (_, ts_client) in &state.clients {
+            let user = ts_client_to_user(ts_client);
+            self.server_state.users.insert(user.id, user);
+        }
+
+        // Update our client ID
+        self.client_id = Some(state.own_client.0);
+
+        // Update our channel ID
+        if let Some(our_client) = state.clients.get(&state.own_client) {
+            self.channel_id = Some(our_client.channel.0);
+        }
+
+        info!(
+            "State synced: {} users, {} channels",
+            self.server_state.users.len(),
+            self.server_state.channels.len()
+        );
+
+        Ok(())
+    }
+
+    /// Process an incoming message event (non-book protocol messages)
+    ///
+    /// Note: Text messages and pokes arrive via `BookEvents` as `Event::Message`,
+    /// not here. This handles remaining protocol messages like channellistfinished.
+    fn process_message_event(&mut self, msg: InMessage) -> Option<Event> {
+        log::info!("process_message_event: cmd={}", msg.get_command_name());
+        match msg {
+            InMessage::FileList(file_list) => {
+                let count = file_list.iter().count();
+                log::info!("Received FileList with {} entries", count);
+                if let Some((_, _, ref mut entries)) = self.pending_file_list {
+                    for part in file_list.iter() {
+                        log::info!("  file entry: name={}, size={}, is_file={}", part.name, part.size, part.is_file);
+                        entries.push(FileEntry {
+                            name: part.name.clone(),
+                            size: part.size,
+                            datetime: part.date_time.unix_timestamp(),
+                            is_file: part.is_file,
+                        });
+                    }
+                } else {
+                    log::warn!("Received FileList but no pending_file_list!");
+                }
+                None
+            }
+            InMessage::FileListFinished(_finished) => {
+                log::info!("Received FileListFinished");
+                if let Some((channel_id, path, entries)) = self.pending_file_list.take() {
+                    log::info!("File list complete: channel={}, path={}, {} files", channel_id, path, entries.len());
+                    let event = Event::FileListReceived { channel_id, path, files: entries };
+                    let _ = self.event_tx.send(event.clone());
+                    Some(event)
+                } else {
+                    log::warn!("FileListFinished but no pending_file_list");
+                    None
+                }
+            }
+            InMessage::PermOverview(ref perm) => {
+                if let Some((channel_id, ref mut perms)) = self.pending_perm_overview {
+                    for part in perm.iter() {
+                        let perm_id = part.permission_id.0;
+                        let value = part.permission_value;
+                        // Keep the best value: -1 (unlimited) wins, otherwise take max
+                        let entry = perms.entry(perm_id).or_insert(0);
+                        if *entry != -1 {
+                            if value == -1 || value > *entry {
+                                *entry = value;
+                            }
+                        }
+                    }
+                    // Compute hints immediately — tsclientlib consumes the terminating
+                    // "error id=0" internally, so CommandError never fires for permoverview.
+                    let hints = compute_file_permission_hints(perms);
+                    log::info!("Channel {} permission_hints computed: {:#x} ({} perms)", channel_id, hints, perms.len());
+                    let cid = channel_id;
+                    // Clear pending state
+                    self.pending_perm_overview = None;
+                    // Update the channel in server state
+                    if let Some(ch) = self.server_state.channels.get_mut(&cid) {
+                        ch.permission_hints = hints;
+                    }
+                    let event = Event::ChannelPermissionsUpdated { channel_id: cid, permission_hints: hints };
+                    let _ = self.event_tx.send(event.clone());
+                    return Some(event);
+                }
+                None
+            }
+            InMessage::CommandError(ref err) => {
+                for part in err.iter() {
+                    log::info!("CommandError: id={:?}, msg={}", part.id, part.message);
+                }
+                // Handle "database empty result" (1281) — server sends this when a
+                // directory has no files instead of FileListFinished.
+                if self.pending_file_list.is_some() {
+                    let is_empty_result = err.iter().any(|part| part.id == TsError::DatabaseEmptyResult);
+                    if is_empty_result {
+                        if let Some((channel_id, path, entries)) = self.pending_file_list.take() {
+                            log::info!("File list empty dir: channel={}, path={}", channel_id, path);
+                            let event = Event::FileListReceived { channel_id, path, files: entries };
+                            let _ = self.event_tx.send(event.clone());
+                            return Some(event);
+                        }
+                    }
+                }
+                // Handle permoverview failure (e.g. permission denied).
+                // Success case is handled directly in InMessage::PermOverview.
+                if self.pending_perm_overview.is_some() {
+                    let is_error = err.iter().any(|part| (part.id as u32) != 0);
+                    if is_error {
+                        if let Some((channel_id, _)) = self.pending_perm_overview.take() {
+                            log::info!("permoverview failed for channel {}, defaulting to browse/download only", channel_id);
+                            let hints = HINT_JOIN | HINT_FILE_BROWSE | HINT_FILE_DOWNLOAD;
+                            if let Some(ch) = self.server_state.channels.get_mut(&channel_id) {
+                                ch.permission_hints = hints;
+                            }
+                            let event = Event::ChannelPermissionsUpdated { channel_id, permission_hints: hints };
+                            let _ = self.event_tx.send(event.clone());
+                            return Some(event);
+                        }
+                    }
+                }
+                // Emit CommandError event for non-trivial errors (skip id=0 "ok")
+                for part in err.iter() {
+                    let error_id = part.id as u32;
+                    if error_id != 0 {
+                        let event = Event::CommandError {
+                            error_id,
+                            message: part.message.clone(),
+                        };
+                        let _ = self.event_tx.send(event);
+                    }
+                }
+                None
+            }
+            _ => {
+                log::debug!("Unhandled MessageEvent: {:?}", msg.get_command_name());
+                None
+            }
+        }
+    }
+
+    /// Dispatch an event to all handlers
+    async fn dispatch_event(&self, event: Event) {
+        for handler in &self.handlers {
+            handler.on_event(&event).await;
+        }
+    }
+
+    /// Add an event handler
+    pub fn add_handler(&mut self, handler: Arc<dyn EventHandler>) {
+        self.handlers.push(handler);
+    }
+
+    /// Get the current connection state
+    pub fn state(&self) -> ConnectionState {
+        self.state.clone()
+    }
+
+    /// Check if connected
+    pub fn is_connected(&self) -> bool {
+        self.state.is_connected()
+    }
+
+    /// Get our client ID
+    pub fn client_id(&self) -> Option<u16> {
+        self.client_id
+    }
+
+    /// Get our current channel ID
+    pub fn channel_id(&self) -> Option<u64> {
+        self.channel_id
+    }
+
+    /// Get a snapshot of the server state
+    pub fn server_state(&self) -> &ServerState {
+        &self.server_state
+    }
+
+    /// Get all channels from tsclientlib state
+    pub fn channels(&self) -> Vec<Channel> {
+        self.server_state.channels.values().cloned().collect()
+    }
+
+    /// Get all users from tsclientlib state
+    pub fn users(&self) -> Vec<User> {
+        let mut users: Vec<User> = self.server_state.users.values().cloned().collect();
+        // Apply local mute override for self — tsclientlib's state book
+        // doesn't reflect our clientupdate, so any re-read from it will
+        // have stale input_muted. We always apply our known state.
+        if let (Some(client_id), Some(muted)) = (self.client_id, self.self_input_muted) {
+            if let Some(user) = users.iter_mut().find(|u| u.id == client_id) {
+                user.is_input_muted = muted;
+            }
+        }
+        users
+    }
+
+    /// Get all users directly from tsclientlib's connection state.
+    ///
+    /// This bypasses `server_state` and reads directly from the live
+    /// connection book, which may have users that `server_state` missed.
+    pub fn users_from_connection(&self) -> Vec<User> {
+        let con = match self.connection.as_ref() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        let state = match con.get_state() {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("users_from_connection: get_state failed: {}", e);
+                return Vec::new();
+            }
+        };
+        info!(
+            "users_from_connection: tsclientlib state has {} clients, {} channels",
+            state.clients.len(),
+            state.channels.len()
+        );
+        let mut users: Vec<User> = state.clients.values().map(|c| ts_client_to_user(c)).collect();
+        // Apply local mute override (same as users())
+        if let (Some(client_id), Some(muted)) = (self.client_id, self.self_input_muted) {
+            if let Some(user) = users.iter_mut().find(|u| u.id == client_id) {
+                user.is_input_muted = muted;
+            }
+        }
+        users
+    }
+
+    /// Get a specific channel
+    pub fn channel(&self, id: u64) -> Option<Channel> {
+        self.server_state.channels.get(&id).cloned()
+    }
+
+    /// Get a specific user
+    pub fn user(&self, id: u16) -> Option<User> {
+        self.server_state.users.get(&id).cloned()
+    }
+
+    /// Move to a channel
+    pub fn move_to_channel(&mut self, channel_id: u64) -> Result<()> {
+        self.move_to_channel_with_password(channel_id, None)
+    }
+
+    /// Move to a channel with password
+    pub fn move_to_channel_with_password(
+        &mut self,
+        channel_id: u64,
+        password: Option<String>,
+    ) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        // Get our client ID from the state
+        let our_client_id = con
+            .get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .own_client;
+
+        debug!("Moving client {} to channel {}", our_client_id.0, channel_id);
+
+        // Create the clientmove command
+        let mut cmd = OutCommand::new(
+            Direction::C2S,
+            Flags::empty(),
+            PacketType::Command,
+            "clientmove",
+        );
+        cmd.write_arg("clid", &our_client_id.0);
+        cmd.write_arg("cid", &channel_id);
+
+        // Add password if provided
+        if let Some(pwd) = password {
+            let encoded_pwd = tsproto_types::crypto::encode_password(pwd.as_bytes());
+            cmd.write_arg("cpw", &encoded_pwd);
+        }
+
+        // Send the command using OutCommandExt trait
+        cmd.send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        self.channel_id = Some(channel_id);
+        Ok(())
+    }
+
+    /// Send a message to the server
+    pub fn send_server_message(&mut self, message: impl Into<String>) -> Result<()> {
+        let msg = message.into();
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        debug!("Sending server message: {}", msg);
+
+        // Get state and create message command, then send it
+        con.get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .send_message(TsMessageTarget::Server, &msg)
+            .send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Send a message to the current channel
+    pub fn send_channel_message(&mut self, message: impl Into<String>) -> Result<()> {
+        let msg = message.into();
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        debug!("Sending channel message: {}", msg);
+
+        // Get state and create message command, then send it
+        con.get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .send_message(TsMessageTarget::Channel, &msg)
+            .send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Send a private message to a user
+    pub fn send_private_message(&mut self, user_id: u16, message: impl Into<String>) -> Result<()> {
+        let msg = message.into();
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        debug!("Sending private message to {}: {}", user_id, msg);
+
+        // Get state and create message command, then send it
+        con.get_state()
+            .map_err(|e| Error::Internal(e.to_string()))?
+            .send_message(TsMessageTarget::Client(ClientId(user_id)), &msg)
+            .send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Send audio data
+    pub fn send_audio(&mut self, data: &[u8], codec: AudioCodec) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        if !con.can_send_audio() {
+            return Err(Error::Internal("Cannot send audio".to_string()));
+        }
+
+        // Create audio packet using C2S format
+        let audio_data = AudioData::C2S {
+            id: self.audio_sequence,
+            codec: audio_codec_to_codec_type(codec),
+            data,
+        };
+        self.audio_sequence = self.audio_sequence.wrapping_add(1);
+
+        let packet = OutAudio::new(&audio_data);
+        con.send_audio(packet)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Download a file from the server
+    pub fn download_file(&mut self, channel_id: u64, path: &str) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        let handle = con
+            .download_file(ChannelId(channel_id), path, None, None)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        self.pending_downloads
+            .insert(handle.0, (channel_id, path.to_string()));
+
+        debug!("Started download: channel={}, path={}", channel_id, path);
+        Ok(())
+    }
+
+    /// Upload a file to the server
+    pub fn upload_file(&mut self, channel_id: u64, path: &str, data: &[u8], overwrite: bool) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        let handle = con.upload_file(
+            ChannelId(channel_id), path, None, data.len() as u64, overwrite, false,
+        ).map_err(|e| Error::Internal(e.to_string()))?;
+        self.pending_uploads.insert(handle.0, (channel_id, path.to_string(), data.to_vec()));
+        debug!("Started upload: channel={}, path={}, size={}", channel_id, path, data.len());
+        Ok(())
+    }
+
+    /// Request the file list for a channel directory
+    pub fn list_files(&mut self, channel_id: u64, path: &str) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "ftgetfilelist");
+        cmd.write_arg("cid", &channel_id);
+        cmd.write_arg("cpw", &"");
+        cmd.write_arg("path", &path);
+        cmd.send(con).map_err(|e| Error::Internal(e.to_string()))?;
+        self.pending_file_list = Some((channel_id, path.to_string(), Vec::new()));
+        debug!("Requested file list: channel={}, path={}", channel_id, path);
+        Ok(())
+    }
+
+    /// Query effective permissions for the current user in a channel.
+    /// Sends `permoverview cldbid=X cid=Y` and collects responses asynchronously.
+    /// Results arrive as ChannelPermissionsUpdated events.
+    pub fn query_channel_permissions(&mut self, channel_id: u64) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        let state = con.get_state().map_err(|e| Error::Internal(e.to_string()))?;
+        let our_client = state.clients.get(&state.own_client)
+            .ok_or(Error::Internal("Own client not found".to_string()))?;
+        let cldbid = our_client.database_id.0;
+        log::info!("query_channel_permissions: cldbid={}, cid={}", cldbid, channel_id);
+        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "permoverview");
+        cmd.write_arg("cldbid", &cldbid);
+        cmd.write_arg("cid", &channel_id);
+        cmd.write_arg("permid", &0u32);
+        cmd.send(con).map_err(|e| Error::Internal(e.to_string()))?;
+        self.pending_perm_overview = Some((channel_id, HashMap::new()));
+        Ok(())
+    }
+
+    /// Delete a file on the server
+    pub fn delete_file(&mut self, channel_id: u64, name: &str) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "ftdeletefile");
+        cmd.write_arg("cid", &channel_id);
+        cmd.write_arg("cpw", &"");
+        cmd.write_arg("name", &name);
+        cmd.send(con).map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Rename a file on the server
+    pub fn rename_file(&mut self, channel_id: u64, old_name: &str, new_name: &str) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "ftrenamefile");
+        cmd.write_arg("cid", &channel_id);
+        cmd.write_arg("cpw", &"");
+        cmd.write_arg("tcid", &channel_id);
+        cmd.write_arg("tcpw", &"");
+        cmd.write_arg("oldname", &old_name);
+        cmd.write_arg("newname", &new_name);
+        cmd.send(con).map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Create a directory on the server
+    pub fn create_directory(&mut self, channel_id: u64, dirname: &str) -> Result<()> {
+        let con = self.connection.as_mut().ok_or(ConnectionError::NotConnected)?;
+        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "ftcreatedir");
+        cmd.write_arg("cid", &channel_id);
+        cmd.write_arg("cpw", &"");
+        cmd.write_arg("dirname", &dirname);
+        cmd.send(con).map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Subscribe to events
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.event_tx.subscribe()
+    }
+
+    /// Disconnect from the server
+    pub fn disconnect(&mut self) -> Result<()> {
+        self.disconnect_with_reason("Goodbye")
+    }
+
+    /// Disconnect from the server with a reason
+    pub fn disconnect_with_reason(&mut self, reason: impl Into<String>) -> Result<()> {
+        info!("Disconnecting from server");
+
+        if let Some(con) = self.connection.as_mut() {
+            let options = DisconnectOptions::new()
+                .reason(Reason::Clientdisconnect)
+                .message(reason.into());
+
+            con.disconnect(options)
+                .map_err(|e| ConnectionError::ConnectionLost(e.to_string()))?;
+        }
+
+        // Don't take/drop the connection here — keep it alive so the runtime
+        // has time to send the disconnect packet over the network.
+        // The connection will be dropped when the Client is dropped (via close/nativeDestroy).
+
+        self.state = ConnectionState::Disconnected;
+
+        let _ = self.event_tx.send(Event::Disconnected {
+            reason: "User requested".to_string(),
+        });
+
+        Ok(())
+    }
+
+    /// Get access to the underlying tsclientlib connection
+    pub fn inner(&self) -> Option<&TsConnection> {
+        self.connection.as_ref()
+    }
+
+    /// Get mutable access to the underlying tsclientlib connection
+    pub fn inner_mut(&mut self) -> Option<&mut TsConnection> {
+        self.connection.as_mut()
+    }
+
+    /// Notify the server of our input muted state
+    pub fn set_input_muted(&mut self, muted: bool) -> Result<()> {
+        let con = self
+            .connection
+            .as_mut()
+            .ok_or(ConnectionError::NotConnected)?;
+
+        let val: u32 = if muted { 1 } else { 0 };
+        let mut cmd = OutCommand::new(
+            Direction::C2S,
+            Flags::empty(),
+            PacketType::Command,
+            "clientupdate",
+        );
+        cmd.write_arg("client_input_muted", &val);
+
+        cmd.send(con)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        info!("Sent clientupdate client_input_muted={}", val);
+
+        // Track locally — tsclientlib's state book won't reflect this
+        // because the server doesn't echo clientupdate back to the sender.
+        self.self_input_muted = Some(muted);
+
+        // Also patch server_state immediately
+        if let Some(client_id) = self.client_id {
+            if let Some(user) = self.server_state.users.get_mut(&client_id) {
+                user.is_input_muted = muted;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Convert tsclientlib CodecType to our AudioCodec
+fn codec_type_to_audio_codec(codec: CodecType) -> AudioCodec {
+    match codec {
+        CodecType::SpeexNarrowband => AudioCodec::SpeexNarrowband,
+        CodecType::SpeexWideband => AudioCodec::SpeexWideband,
+        CodecType::SpeexUltrawideband => AudioCodec::SpeexUltraWideband,
+        CodecType::CeltMono => AudioCodec::CeltMono,
+        CodecType::OpusVoice => AudioCodec::OpusVoice,
+        CodecType::OpusMusic => AudioCodec::OpusMusic,
+    }
+}
+
+/// Convert our AudioCodec to tsclientlib CodecType
+fn audio_codec_to_codec_type(codec: AudioCodec) -> CodecType {
+    match codec {
+        AudioCodec::SpeexNarrowband => CodecType::SpeexNarrowband,
+        AudioCodec::SpeexWideband => CodecType::SpeexWideband,
+        AudioCodec::SpeexUltraWideband => CodecType::SpeexUltrawideband,
+        AudioCodec::CeltMono => CodecType::CeltMono,
+        AudioCodec::OpusVoice => CodecType::OpusVoice,
+        AudioCodec::OpusMusic => CodecType::OpusMusic,
+    }
+}
+
+/// Convert tsclientlib Client to our User type
+fn ts_client_to_user(client: &TsClient) -> User {
+    // Convert UID bytes to base64 string
+    let uid = client.uid.as_ref()
+        .map(|u| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &u.0))
+        .unwrap_or_default();
+
+    // Check client type
+    let client_type = if matches!(client.client_type, TsClientType::Query { .. }) { 1 } else { 0 };
+
+    User {
+        id: client.id.0,
+        uid,
+        database_id: client.database_id.0,
+        channel_id: client.channel.0,
+        nickname: client.name.clone(),
+        client_type,
+        is_talking: false, // Tracked separately via audio
+        is_input_muted: client.input_muted,
+        is_output_muted: client.output_muted,
+        has_input_hardware: client.input_hardware_enabled,
+        has_output_hardware: client.output_hardware_enabled,
+        is_away: client.away_message.is_some(),
+        away_message: client.away_message.clone(),
+        is_recording: client.is_recording,
+        is_priority_speaker: client.is_priority_speaker,
+        is_channel_commander: client.is_channel_commander,
+        talk_power: client.talk_power,
+        is_talker: client.talk_power_granted,
+        server_groups: client.server_groups.iter().map(|g| g.0).collect(),
+        channel_group: client.channel_group.0,
+        platform: client.optional_data.as_ref().map(|o| o.platform.clone()).unwrap_or_default(),
+        version: client.optional_data.as_ref().map(|o| o.version.clone()).unwrap_or_default(),
+        country: None, // Not directly available in tsclientlib
+        description: None,
+        avatar_id: if client.avatar_hash.is_empty() { None } else { Some(client.avatar_hash.clone()) },
+        icon_id: client.icon.0 as i64,
+        idle_time: 0,
+        connected_time: 0,
+    }
+}
+
+/// Convert tsclientlib Channel to our Channel type
+fn ts_channel_to_channel(channel: &TsChannel) -> Channel {
+    let (is_permanent, is_semi_permanent) = match channel.channel_type {
+        TsChannelType::Permanent => (true, false),
+        TsChannelType::SemiPermanent => (false, true),
+        TsChannelType::Temporary => (false, false),
+    };
+
+    // Extract description from optional data
+    let description = channel.optional_data.as_ref().map(|o| o.description.clone());
+
+    // Convert MaxClients enum to i32 (-1 for unlimited)
+    let max_clients = channel.max_clients
+        .map(|m| match m {
+            tsproto_types::MaxClients::Unlimited => -1,
+            tsproto_types::MaxClients::Inherited => -1,
+            tsproto_types::MaxClients::Limited(n) => n as i32,
+        })
+        .unwrap_or(-1);
+
+    let max_family_clients = channel.max_family_clients
+        .map(|m| match m {
+            tsproto_types::MaxClients::Unlimited => -1,
+            tsproto_types::MaxClients::Inherited => -1,
+            tsproto_types::MaxClients::Limited(n) => n as i32,
+        })
+        .unwrap_or(-1);
+
+    Channel {
+        id: channel.id.0,
+        parent_id: channel.parent.0,
+        name: channel.name.clone(),
+        topic: channel.topic.clone(),
+        description,
+        order: channel.order.0 as i32,
+        is_permanent,
+        is_semi_permanent,
+        is_default: channel.is_default.unwrap_or(false),
+        has_password: channel.has_password.unwrap_or(false),
+        codec: ts_codec_to_u8(channel.codec),
+        codec_quality: channel.codec_quality.unwrap_or(7),
+        max_clients,
+        max_family_clients,
+        needed_talk_power: channel.needed_talk_power.unwrap_or(0),
+        icon_id: channel.icon.map(|i| i.0 as i64).unwrap_or(0),
+        is_subscribed: channel.subscribed,
+        permission_hints: {
+            let hints = channel.permission_hints.map(|h| h.bits() as u64).unwrap_or(0);
+            if hints != 0 {
+                log::info!("Channel {} ({}) permission_hints = {:#x}", channel.name, channel.id.0, hints);
+            }
+            hints
+        },
+    }
+}
+
+/// Convert tsclientlib Codec to u8
+fn ts_codec_to_u8(codec: TsCodec) -> u8 {
+    match codec {
+        TsCodec::SpeexNarrowband => 0,
+        TsCodec::SpeexWideband => 1,
+        TsCodec::SpeexUltrawideband => 2,
+        TsCodec::CeltMono => 3,
+        TsCodec::OpusVoice => 4,
+        TsCodec::OpusMusic => 5,
+    }
+}
+
+/// Permission IDs for file operations (from Permissions.csv, 0-indexed from line 2)
+const PERM_FT_FILE_UPLOAD_POWER: u32 = 235;
+const PERM_FT_NEEDED_FILE_UPLOAD_POWER: u32 = 236;
+const PERM_FT_FILE_DOWNLOAD_POWER: u32 = 237;
+const PERM_FT_NEEDED_FILE_DOWNLOAD_POWER: u32 = 238;
+const PERM_FT_FILE_DELETE_POWER: u32 = 239;
+const PERM_FT_NEEDED_FILE_DELETE_POWER: u32 = 240;
+const PERM_FT_FILE_RENAME_POWER: u32 = 241;
+const PERM_FT_NEEDED_FILE_RENAME_POWER: u32 = 242;
+const PERM_FT_FILE_BROWSE_POWER: u32 = 243;
+const PERM_FT_NEEDED_FILE_BROWSE_POWER: u32 = 244;
+const PERM_FT_DIRECTORY_CREATE_POWER: u32 = 245;
+const PERM_FT_NEEDED_DIRECTORY_CREATE_POWER: u32 = 246;
+
+/// ChannelPermissionHint bitflags (matches Enums.toml / Channel.java constants)
+const HINT_JOIN: u64 = 1;
+const HINT_FILE_UPLOAD: u64 = 64;
+const HINT_FILE_DOWNLOAD: u64 = 128;
+const HINT_FILE_DELETE: u64 = 256;
+const HINT_FILE_RENAME: u64 = 512;
+const HINT_FILE_BROWSE: u64 = 1024;
+const HINT_FILE_DIRECTORY_CREATE: u64 = 2048;
+
+/// Compute ChannelPermissionHint bitflags from a permoverview result.
+/// For each file operation, the user can do it if their power >= the needed power.
+/// Permissions not present in the map default to 0.
+fn compute_file_permission_hints(perms: &HashMap<u32, i32>) -> u64 {
+    let mut hints: u64 = HINT_JOIN; // If we're in the channel, we can join
+
+    let can = |power_id: u32, needed_id: u32| -> bool {
+        match perms.get(&power_id) {
+            Some(&-1) => true, // unlimited (admin)
+            Some(&power) => power >= perms.get(&needed_id).copied().unwrap_or(0),
+            // Power absent from permoverview = not explicitly restricted.
+            // Show the button; the server enforces the real check anyway.
+            None => true,
+        }
+    };
+
+    if can(PERM_FT_FILE_UPLOAD_POWER, PERM_FT_NEEDED_FILE_UPLOAD_POWER) {
+        hints |= HINT_FILE_UPLOAD;
+    }
+    if can(PERM_FT_FILE_DOWNLOAD_POWER, PERM_FT_NEEDED_FILE_DOWNLOAD_POWER) {
+        hints |= HINT_FILE_DOWNLOAD;
+    }
+    if can(PERM_FT_FILE_DELETE_POWER, PERM_FT_NEEDED_FILE_DELETE_POWER) {
+        hints |= HINT_FILE_DELETE;
+    }
+    if can(PERM_FT_FILE_RENAME_POWER, PERM_FT_NEEDED_FILE_RENAME_POWER) {
+        hints |= HINT_FILE_RENAME;
+    }
+    if can(PERM_FT_FILE_BROWSE_POWER, PERM_FT_NEEDED_FILE_BROWSE_POWER) {
+        hints |= HINT_FILE_BROWSE;
+    }
+    if can(PERM_FT_DIRECTORY_CREATE_POWER, PERM_FT_NEEDED_DIRECTORY_CREATE_POWER) {
+        hints |= HINT_FILE_DIRECTORY_CREATE;
+    }
+
+    log::info!("compute_file_permission_hints: perms={:?} -> hints={:#x}", perms, hints);
+    hints
+}

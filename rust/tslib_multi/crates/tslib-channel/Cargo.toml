@@ -1,0 +1,19 @@
+[package]
+name = "tslib-channel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Channel module for tslib - channel management and navigation"
+
+[dependencies]
+tslib-core = { path = "../tslib-core" }
+
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

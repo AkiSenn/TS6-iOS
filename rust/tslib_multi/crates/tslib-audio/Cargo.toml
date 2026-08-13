@@ -1,0 +1,29 @@
+[package]
+name = "tslib-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Audio module for tslib - voice capture, playback, and codec handling"
+
+[dependencies]
+tslib-core = { path = "../tslib-core" }
+
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+# Audio
+opus.workspace = true
+cpal.workspace = true
+rubato.workspace = true
+
+# Ring buffer for audio
+ringbuf = "0.3"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

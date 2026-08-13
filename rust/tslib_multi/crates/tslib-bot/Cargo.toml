@@ -1,0 +1,28 @@
+[package]
+name = "tslib-bot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bot framework for tslib - easy bot creation with commands and plugins"
+
+[dependencies]
+tslib-core = { path = "../tslib-core" }
+tslib-chat = { path = "../tslib-chat" }
+tslib-audio = { path = "../tslib-audio" }
+tslib-channel = { path = "../tslib-channel" }
+
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Command parsing
+regex = "1.10"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

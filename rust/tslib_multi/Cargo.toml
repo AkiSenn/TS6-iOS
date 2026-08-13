@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tslib-core",
+    "crates/tslib-audio",
+    "crates/tslib-chat",
+    "crates/tslib-channel",
+    "crates/tslib-ffi",
+    "crates/tslib-python",
+    "crates/tslib-jni",
+    "crates/tslib-ios-ffi",
+    "crates/tslib-bot",
+    "examples/simple-bot",
+    "examples/voice-client",
+    "examples/test-suite",
+    "examples/send-msg",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Flamme"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/flamme/tslib"
+description = "A modular TeamSpeak 3 client library"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Core dependencies
+tokio = { version = "1.36", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# TeamSpeak protocol (tsclientlib)
+tsclientlib = { git = "https://github.com/ReSpeak/tsclientlib.git" }
+tsproto = { git = "https://github.com/ReSpeak/tsclientlib.git" }
+tsproto-packets = { git = "https://github.com/ReSpeak/tsclientlib.git" }
+tsproto-types = { git = "https://github.com/ReSpeak/tsclientlib.git" }
+
+# Audio
+opus = "0.3"
+cpal = "0.15"
+rubato = "0.14"  # Resampling
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# FFI
+cbindgen = "0.26"
+
+# Crypto
+rand = "0.8"
+base64 = "0.21"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# Keep symbols in our iOS static library so the Xcode linker can resolve them.
+[profile.release.package.tslib-ios-ffi]
+strip = "none"

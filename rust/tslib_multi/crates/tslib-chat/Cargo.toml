@@ -1,0 +1,23 @@
+[package]
+name = "tslib-chat"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Chat module for tslib - text messaging and BBCode handling"
+
+[dependencies]
+tslib-core = { path = "../tslib-core" }
+
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+# For BBCode parsing
+regex = "1.10"
+emojis = "0.8"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

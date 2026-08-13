@@ -1,0 +1,58 @@
+name: Build unsigned iOS app
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore: ['**/*.md']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build TS6.app (unsigned)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust with iOS target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Build Rust static library for iOS
+        working-directory: rust/tslib_multi
+        run: cargo build --release --target aarch64-apple-ios -p tslib-ios-ffi
+
+      - name: Copy static library into Xcode project
+        run: |
+          mkdir -p ios/RustLib
+          cp rust/tslib_multi/target/aarch64-apple-ios/release/libtslib_ios_ffi.a \
+             ios/RustLib/libtslib_ios_ffi.a
+
+      - name: Build unsigned .app with xcodebuild
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project TS6.xcodeproj \
+            -target TS6 \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package .app into zip
+        working-directory: ios
+        run: |
+          APP="build/Build/Products/Release-iphoneos/TS6.app"
+          test -d "$APP" || { echo "App not found at $APP"; exit 1; }
+          ditto -c -k --sequesterRsrc --keepParent "$APP" TS6-iOS-unsigned.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TS6-iOS-unsigned
+          path: ios/TS6-iOS-unsigned.zip
+          if-no-files-found: error

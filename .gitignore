@@ -1,0 +1,13 @@
+# Rust build output
+rust/tslib_multi/target/
+
+# Static library copied in before xcodebuild (built by CI / build script)
+ios/RustLib/
+
+# Xcode derived data
+ios/build/
+
+# Reference clones (not part of this project)
+reference/
+
+.DS_Store

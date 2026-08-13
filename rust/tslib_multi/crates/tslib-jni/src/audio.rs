@@ -1,0 +1,183 @@
+use jni::objects::{JByteArray, JClass, JValue};
+use jni::sys::jlong;
+use jni::JNIEnv;
+
+use tslib_audio::codec::{Decoder, Encoder};
+
+use crate::error::{audio_to_jni_result, throw_tslib_exception};
+
+/// Internal handle that owns both encoder and decoder.
+pub struct OpusHandle {
+    pub encoder: tslib_audio::codec::OpusEncoder,
+    pub decoder: tslib_audio::codec::OpusDecoder,
+    pub config: tslib_audio::AudioConfig,
+}
+
+fn ptr_to_opus(ptr: jlong) -> &'static mut OpusHandle {
+    unsafe { &mut *(ptr as *mut OpusHandle) }
+}
+
+fn opus_to_ptr(handle: OpusHandle) -> jlong {
+    Box::into_raw(Box::new(handle)) as jlong
+}
+
+/// `OpusCodec()` or `OpusCodec(config)` — create with default or custom config.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_OpusCodec_nativeCreate(
+    mut env: JNIEnv,
+    _class: JClass,
+    sample_rate: i32,
+    channels: i32,
+    bitrate: i32,
+    frame_size_ms: i32,
+) -> jlong {
+    let mut config = tslib_audio::AudioConfig::default();
+    if sample_rate > 0 {
+        config.sample_rate = sample_rate as u32;
+    }
+    if channels > 0 {
+        config.channels = channels as u16;
+    }
+    if bitrate > 0 {
+        config.bitrate = bitrate as u32;
+    }
+    if frame_size_ms > 0 {
+        config.frame_size_ms = frame_size_ms as u32;
+    }
+
+    let codec = match audio_to_jni_result(
+        &mut env,
+        tslib_audio::OpusCodec::new(config.clone()),
+    ) {
+        Some(c) => c,
+        None => return 0,
+    };
+
+    let encoder = match audio_to_jni_result(&mut env, codec.create_encoder()) {
+        Some(e) => e,
+        None => return 0,
+    };
+
+    let decoder = match audio_to_jni_result(&mut env, codec.create_decoder()) {
+        Some(d) => d,
+        None => return 0,
+    };
+
+    opus_to_ptr(OpusHandle {
+        encoder,
+        decoder,
+        config,
+    })
+}
+
+/// `OpusCodec.nativeDestroy(ptr)`
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_OpusCodec_nativeDestroy(
+    _env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) {
+    if ptr != 0 {
+        unsafe {
+            drop(Box::from_raw(ptr as *mut OpusHandle));
+        }
+    }
+}
+
+/// `OpusCodec.encode(pcm)` — encode PCM (16-bit LE bytes) to Opus.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_OpusCodec_nativeEncode<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    ptr: jlong,
+    pcm: JByteArray<'local>,
+) -> jni::sys::jbyteArray {
+    let pcm_bytes = match env.convert_byte_array(&pcm) {
+        Ok(b) => b,
+        Err(e) => {
+            throw_tslib_exception(&mut env, &format!("Failed to read PCM array: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    if pcm_bytes.len() % 2 != 0 {
+        throw_tslib_exception(&mut env, "PCM data must have even length (16-bit samples)");
+        return std::ptr::null_mut();
+    }
+
+    let samples: Vec<i16> = pcm_bytes
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect();
+
+    let handle = ptr_to_opus(ptr);
+    let mut output = vec![0u8; 4000];
+    let len = match audio_to_jni_result(&mut env, handle.encoder.encode(&samples, &mut output)) {
+        Some(l) => l,
+        None => return std::ptr::null_mut(),
+    };
+
+    env.byte_array_from_slice(&output[..len])
+        .map(|a| a.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// `OpusCodec.decode(data)` — decode Opus to PCM (16-bit LE bytes).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_OpusCodec_nativeDecode<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    ptr: jlong,
+    data: JByteArray<'local>,
+) -> jni::sys::jbyteArray {
+    let opus_bytes = match env.convert_byte_array(&data) {
+        Ok(b) => b,
+        Err(e) => {
+            throw_tslib_exception(&mut env, &format!("Failed to read Opus array: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let handle = ptr_to_opus(ptr);
+    let frame_samples = handle.config.frame_size_samples() * handle.config.channels as usize;
+    let mut output = vec![0i16; frame_samples];
+
+    let len = match audio_to_jni_result(&mut env, handle.decoder.decode(&opus_bytes, &mut output)) {
+        Some(l) => l,
+        None => return std::ptr::null_mut(),
+    };
+
+    // Convert i16 samples to bytes (little-endian)
+    let bytes: Vec<u8> = output[..len]
+        .iter()
+        .flat_map(|s| s.to_le_bytes())
+        .collect();
+
+    env.byte_array_from_slice(&bytes)
+        .map(|a| a.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// `OpusCodec.nativeGetConfig()` — returns an `AudioConfig` Java object.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_tslib_OpusCodec_nativeGetConfig(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jni::sys::jobject {
+    let handle = ptr_to_opus(ptr);
+    let config = &handle.config;
+
+    env.new_object(
+        "dev/tslib/AudioConfig",
+        "(IIII)V",
+        &[
+            JValue::Int(config.sample_rate as i32),
+            JValue::Int(config.channels as i32),
+            JValue::Int(config.bitrate as i32),
+            JValue::Int(config.frame_size_ms as i32),
+        ],
+    )
+    .map(|o| o.into_raw())
+    .unwrap_or(std::ptr::null_mut())
+}

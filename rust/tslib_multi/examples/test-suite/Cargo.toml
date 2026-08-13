@@ -1,0 +1,23 @@
+[package]
+name = "test-suite"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Comprehensive test suite for tslib"
+
+[dependencies]
+tslib-core = { path = "../../crates/tslib-core" }
+tslib-chat = { path = "../../crates/tslib-chat" }
+tslib-channel = { path = "../../crates/tslib-channel" }
+tslib-audio = { path = "../../crates/tslib-audio" }
+tslib-bot = { path = "../../crates/tslib-bot" }
+
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+base64.workspace = true
+
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"

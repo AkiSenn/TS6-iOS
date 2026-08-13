@@ -1,0 +1,15 @@
+[package]
+name = "send-msg"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "send-msg"
+path = "src/main.rs"
+
+[dependencies]
+tslib-core = { path = "../../crates/tslib-core" }
+tokio = { version = "1.36", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

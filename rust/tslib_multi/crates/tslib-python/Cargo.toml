@@ -1,0 +1,19 @@
+[package]
+name = "tslib-python"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Python bindings for tslib via PyO3"
+
+[lib]
+name = "tslib"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+tslib-core = { path = "../tslib-core" }
+tslib-audio = { path = "../tslib-audio" }
+tslib-chat = { path = "../tslib-chat" }
+tslib-channel = { path = "../tslib-channel" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

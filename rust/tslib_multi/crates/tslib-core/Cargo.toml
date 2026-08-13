@@ -1,0 +1,29 @@
+[package]
+name = "tslib-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core TeamSpeak 3 client library - connection, identity, and protocol handling"
+
+[dependencies]
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+log = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+base64.workspace = true
+
+tsclientlib.workspace = true
+tsproto.workspace = true
+tsproto-packets.workspace = true
+tsproto-types.workspace = true
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-subscriber.workspace = true

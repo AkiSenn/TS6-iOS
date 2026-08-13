@@ -1,0 +1,22 @@
+[package]
+name = "tslib-ios-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "C FFI bindings of tslib for embedding into iOS apps (Swift interop)"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+tslib-core = { path = "../tslib-core" }
+
+tokio.workspace = true
+base64.workspace = true
+serde_json.workspace = true
+opus.workspace = true
+
+[build-dependencies]
+cbindgen.workspace = true

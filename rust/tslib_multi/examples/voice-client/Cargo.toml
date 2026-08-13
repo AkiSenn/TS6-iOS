@@ -1,0 +1,20 @@
+[package]
+name = "voice-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "voice-client"
+path = "src/main.rs"
+
+[dependencies]
+tslib-core = { path = "../../crates/tslib-core" }
+tslib-audio = { path = "../../crates/tslib-audio" }
+tslib-channel = { path = "../../crates/tslib-channel" }
+
+tokio = { version = "1.36", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
