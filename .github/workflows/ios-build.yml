@@ -46,16 +46,24 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Package .app into zip
+      - name: Ad-hoc sign and package .ipa
         working-directory: ios
         run: |
           APP="build/Build/Products/Release-iphoneos/TS6.app"
           test -d "$APP" || { echo "App not found at $APP"; exit 1; }
-          ditto -c -k --sequesterRsrc --keepParent "$APP" TS6-iOS-unsigned.zip
+          codesign --force --deep --sign - "$APP"
+          rm -rf Payload
+          mkdir -p Payload
+          ditto "$APP" "Payload/TS6.app"
+          ditto -c -k --sequesterRsrc --keepParent Payload TS6-iOS.ipa
+          rm -rf Payload
+          ditto -c -k --sequesterRsrc --keepParent "$APP" TS6-iOS-app.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TS6-iOS-unsigned
-          path: ios/TS6-iOS-unsigned.zip
+          name: TS6-iOS
+          path: |
+            ios/TS6-iOS.ipa
+            ios/TS6-iOS-app.zip
           if-no-files-found: error

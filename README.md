@@ -5,7 +5,8 @@
 （核心协议来自 [tsclientlib](https://github.com/ReSpeak/tsclientlib)），
 **不需要 TeamSpeak 官方 SDK 授权**，可以连接自建 TeamSpeak 3/6 服务器。
 
-产物是不签名的 `TS6.app`，适合在已绕过签名验证的设备（如越狱设备）上安装。
+产物是 ad-hoc 签名的 `TS6-iOS.ipa`，适合用 TrollStore（巨魔商店）直接安装；
+同时保留 `TS6-iOS-app.zip`（内含 `TS6.app`），供越狱设备用 Filza/SSH 安装。
 
 ## 目录结构
 
@@ -35,11 +36,14 @@ ios/
 1. 把这个仓库推送到你的 GitHub（main/master 分支）。
 2. 打开仓库的 **Actions** 页，运行 **Build unsigned iOS app**（push 会自动触发，
    也可以手动 `workflow_dispatch`）。
-3. 构建完成后在 workflow run 的 **Artifacts** 下载 `TS6-iOS-unsigned.zip`。
-4. 解压得到 `TS6.app`，安装到已绕过签名验证的设备上。
+3. 构建完成后在 workflow run 的 **Artifacts** 下载 `TS6-iOS.ipa`
+   （或 `TS6-iOS-app.zip`）。
+4. TrollStore 用户：把 `TS6-iOS.ipa` 分享到 TrollStore 即可安装；
+   越狱用户：解压 `TS6-iOS-app.zip` 得到 `TS6.app`，用 Filza/SSH 安装。
 
 工作流内容：macOS runner 上交叉编译 `aarch64-apple-ios` 的 Rust 静态库 →
-复制进 Xcode 工程 → `xcodebuild CODE_SIGNING_ALLOWED=NO` 打包未签名 .app。
+复制进 Xcode 工程 → `xcodebuild CODE_SIGNING_ALLOWED=NO` 打包 .app →
+ad-hoc 签名后组装成 `Payload/TS6.app` 的 `.ipa`。
 runner 无需任何代理。
 
 ## 在 Windows 本地开发/验证 Rust 层
