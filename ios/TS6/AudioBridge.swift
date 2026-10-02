@@ -27,10 +27,16 @@ final class AudioBridge {
     private var started = false
     private var playerAttached = false
     private var tapInstalled = false
+    private var sentFrames: UInt64 = 0
+    private var receivedFrames: UInt64 = 0
+    private var unsupportedCodecs = Set<Int>()
 
     private var captureAccumulator = [Float]()
 
     var sendFrame: ((Data) -> Void)?
+    var onStatus: ((String) -> Void)?
+    var onError: ((String) -> Void)?
+    var onStats: ((UInt64, UInt64) -> Void)?
 
     private let sampleRate = 48000.0
     private let frameSamples = 960 // 20 ms @ 48 kHz
@@ -44,14 +50,15 @@ final class AudioBridge {
         started = true
         lock.unlock()
 
-        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-            guard let self = self else { return }
-            guard granted else { return }
-            DispatchQueue.main.async { self.setupAudio() }
+        // Playback must not depend on microphone permission.  The old code
+        // initialized the entire engine only after permission was granted,
+        // which also made incoming voices silent when permission was denied.
+        DispatchQueue.main.async { [weak self] in
+            self?.setupPlaybackAndRequestCapture()
         }
     }
 
-    private func setupAudio() {
+    private func setupPlaybackAndRequestCapture() {
         lock.lock()
         let shouldSetup = started
         lock.unlock()
@@ -62,21 +69,18 @@ final class AudioBridge {
             try session.setCategory(.playAndRecord, mode: .voiceChat,
                                     options: [.defaultToSpeaker, .allowBluetooth])
             try session.setPreferredSampleRate(sampleRate)
+            try session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true)
         } catch {
             NSLog("TS6: audio session setup failed: \(error)")
+            reportError("音频会话启动失败：\(error.localizedDescription)")
         }
 
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
+            reportError("无法创建 48 kHz 播放格式")
             return
         }
         format = fmt
-
-        lock.lock()
-        if opus == nil {
-            opus = tslib_opus_create(48000, 1, 48000, 20)
-        }
-        lock.unlock()
 
         if !playerAttached {
             engine.attach(player)
@@ -84,24 +88,83 @@ final class AudioBridge {
         }
         engine.connect(player, to: engine.mainMixerNode, format: fmt)
 
-        // Use the node's native input format for the tap and convert in the
-        // callback; requesting a custom format can trip AVAudioEngine.
-        let input = engine.inputNode
-        let inputFormat = input.inputFormat(forBus: 0)
-        inputConverter = AVAudioConverter(from: inputFormat, to: fmt)
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            self?.capture(buffer)
-        }
-        tapInstalled = true
-
         engine.prepare()
         do {
             try engine.start()
             player.play()
+            reportStatus("扬声器已启动，正在检查麦克风权限…")
         } catch {
             NSLog("TS6: audio engine failed to start: \(error)")
+            reportError("扬声器启动失败：\(error.localizedDescription)")
+            return
         }
         startPlayback()
+
+        switch session.recordPermission {
+        case .granted:
+            setupCapture()
+        case .denied:
+            reportError("麦克风权限被拒绝；可收听但不能发言。请到系统设置中允许麦克风。")
+        case .undetermined:
+            session.requestRecordPermission { [weak self] granted in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if granted {
+                        self.setupCapture()
+                    } else {
+                        self.reportError("麦克风权限被拒绝；可收听但不能发言。请到系统设置中允许麦克风。")
+                    }
+                }
+            }
+        @unknown default:
+            reportError("无法确定麦克风权限状态")
+        }
+    }
+
+    private func setupCapture() {
+        lock.lock()
+        let shouldSetup = started && !tapInstalled
+        lock.unlock()
+        guard shouldSetup, let format = format else { return }
+
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            reportError("麦克风音频会话启动失败：\(error.localizedDescription)")
+            return
+        }
+
+        lock.lock()
+        if opus == nil {
+            opus = tslib_opus_create(48000, 1, 48000, 20)
+        }
+        let encoderReady = opus != nil
+        lock.unlock()
+        guard encoderReady else {
+            reportError("Opus 编码器创建失败")
+            return
+        }
+
+        // Use the node's native format for the tap, then resample to 48 kHz.
+        // Installing a 48 kHz tap directly can crash on Bluetooth/44.1 kHz routes.
+        let input = engine.inputNode
+        let inputFormat = input.inputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            reportError("当前音频路由没有可用的麦克风输入")
+            return
+        }
+        guard let converter = AVAudioConverter(from: inputFormat, to: format) else {
+            reportError("无法把麦克风格式转换为 48 kHz 单声道")
+            return
+        }
+        inputConverter = converter
+        input.installTap(onBus: 0, bufferSize: 960, format: inputFormat) { [weak self] buffer, _ in
+            self?.capture(buffer)
+        }
+        lock.lock()
+        tapInstalled = true
+        lock.unlock()
+        reportStatus("语音已就绪")
     }
 
     private func capture(_ buffer: AVAudioPCMBuffer) {
@@ -174,6 +237,10 @@ final class AudioBridge {
                 }
             }
             if written > 0 {
+                sentFrames &+= 1
+                if sentFrames % 25 == 0 {
+                    reportStatsLocked()
+                }
                 sendFrame?(Data(out[0..<Int(written)]))
             }
         }
@@ -181,11 +248,23 @@ final class AudioBridge {
 
     func handleIncoming(userId: UInt16, codec: Int, data: Data) {
         // Only Opus voice / music is supported.
-        guard codec == 4 || codec == 5 else { return }
+        guard codec == 4 || codec == 5 else {
+            lock.lock()
+            let isNew = unsupportedCodecs.insert(codec).inserted
+            lock.unlock()
+            if isNew {
+                reportError("收到不支持的 TS3 语音编码（codec \(codec)）；请把频道编码改为 Opus Voice/Opus Music。")
+            }
+            return
+        }
         lock.lock()
+        receivedFrames &+= 1
         pending[userId, default: []].append(data)
         if pending[userId]!.count > 50 {
             pending[userId]!.removeFirst(pending[userId]!.count - 50)
+        }
+        if receivedFrames % 25 == 0 {
+            reportStatsLocked()
         }
         lock.unlock()
     }
@@ -193,7 +272,26 @@ final class AudioBridge {
     func setMuted(_ muted: Bool) {
         lock.lock()
         self.muted = muted
+        let captureReady = tapInstalled && opus != nil
         lock.unlock()
+        if !muted && !captureReady {
+            reportError("麦克风尚未就绪；请确认系统麦克风权限已开启。")
+        }
+    }
+
+    /// Caller must hold `lock`.
+    private func reportStatsLocked() {
+        let sent = sentFrames
+        let received = receivedFrames
+        DispatchQueue.main.async { [weak self] in self?.onStats?(sent, received) }
+    }
+
+    private func reportStatus(_ message: String) {
+        DispatchQueue.main.async { [weak self] in self?.onStatus?(message) }
+    }
+
+    private func reportError(_ message: String) {
+        DispatchQueue.main.async { [weak self] in self?.onError?(message) }
     }
 
     private func startPlayback() {
@@ -307,6 +405,9 @@ final class AudioBridge {
         decoders.removeAll()
         pending.removeAll()
         captureAccumulator.removeAll()
+        sentFrames = 0
+        receivedFrames = 0
+        unsupportedCodecs.removeAll()
         inputConverter = nil
         lock.unlock()
     }

@@ -437,6 +437,8 @@ fn client_worker(
         }
     }
 
+    let mut last_audio_error_at: Option<Instant> = None;
+
     loop {
         // 1. Process network events.
         match runtime.block_on(async { client.process_events().await }) {
@@ -471,7 +473,16 @@ fn client_worker(
                 }
                 ClientCmd::SendAudioAsync { data, codec } => {
                     let codec = AudioCodec::from_id(codec).unwrap_or(AudioCodec::OpusVoice);
-                    let _ = client.send_audio(&data, codec);
+                    if let Err(e) = client.send_audio(&data, codec) {
+                        let now = Instant::now();
+                        let should_report = last_audio_error_at
+                            .map(|last| now.duration_since(last) >= Duration::from_secs(1))
+                            .unwrap_or(true);
+                        if should_report {
+                            push_event(&events, error_json(&format!("Audio send failed: {e}")));
+                            last_audio_error_at = Some(now);
+                        }
+                    }
                 }
                 ClientCmd::SetInputMuted { muted, reply } => {
                     let _ = reply.send(client.set_input_muted(muted).map_err(|e| e.to_string()));

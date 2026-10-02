@@ -13,6 +13,9 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var selfId: UInt16?
     @Published var currentChannelId: UInt64?
+    @Published var audioStatus = "音频未启动"
+    @Published var sentAudioFrames: UInt64 = 0
+    @Published var receivedAudioFrames: UInt64 = 0
 
     let bridge = TsClientBridge()
     let audio = AudioBridge()
@@ -48,6 +51,17 @@ final class AppModel: ObservableObject {
         }
         bridge.onAudio = { [weak self] uid, codec, data in
             self?.audio.handleIncoming(userId: uid, codec: codec, data: data)
+        }
+        audio.onStatus = { [weak self] message in
+            self?.audioStatus = message
+        }
+        audio.onError = { [weak self] message in
+            self?.audioStatus = message
+            self?.errorMessage = message
+        }
+        audio.onStats = { [weak self] sent, received in
+            self?.sentAudioFrames = sent
+            self?.receivedAudioFrames = received
         }
 
         // Clean up the TeamSpeak connection on app termination so the server
@@ -86,6 +100,9 @@ final class AppModel: ObservableObject {
         currentChannelId = nil
         talking.removeAll()
         micEnabled = false
+        audioStatus = "音频未启动"
+        sentAudioFrames = 0
+        receivedAudioFrames = 0
         audio.stop()
     }
 

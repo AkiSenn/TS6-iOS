@@ -68,6 +68,13 @@ struct ServerView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+
+            Text("\(model.audioStatus) · 发 \(model.sentAudioFrames) / 收 \(model.receivedAudioFrames)")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
         }
         .navigationBarTitle("TS6", displayMode: .inline)
     }

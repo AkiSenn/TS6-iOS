@@ -1059,10 +1059,6 @@ impl Client {
             .as_mut()
             .ok_or(ConnectionError::NotConnected)?;
 
-        if !con.can_send_audio() {
-            return Err(Error::Internal("Cannot send audio".to_string()));
-        }
-
         // Create audio packet using C2S format
         let audio_data = AudioData::C2S {
             id: self.audio_sequence,

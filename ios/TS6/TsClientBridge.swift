@@ -112,7 +112,13 @@ final class TsClientBridge {
 
     func setInputMuted(_ muted: Bool) {
         guard let client = client else { return }
-        _ = tslib_client_set_input_muted(client, muted ? 1 : 0)
+        let result = tslib_client_set_input_muted(client, muted ? 1 : 0)
+        if result.rawValue != 0 {
+            let action = muted ? "关闭" : "开启"
+            DispatchQueue.main.async { [weak self] in
+                self?.onError?("\(action)麦克风失败（错误码 \(result.rawValue)）")
+            }
+        }
     }
 
     func move(to channelId: UInt64) {

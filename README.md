@@ -90,6 +90,7 @@ xcodebuild -project TS6.xcodeproj -target TS6 -configuration Release \
 - Opus 语音收发（48 kHz 单声道，20 ms 帧），PTT 按住说话 + 麦克风开关
 - iOS 输入路由自动重采样到 48 kHz；扬声器与蓝牙语音路由可用
 - 接收端按说话者维护 FIFO，逐帧解码混音，避免连续语音包相互叠加
+- 收听不再依赖麦克风权限；界面显示音频状态和实际发送/接收帧计数
 - 频道文本聊天
 - 身份持久化
 
