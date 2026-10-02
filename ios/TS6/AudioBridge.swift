@@ -86,7 +86,8 @@ final class AudioBridge {
     private let pcmLock = NSLock()
     private var pcmQueues: [UInt16: PCMQueue] = [:]
 
-    var sendFrame: ((Data) -> Void)?
+    /// Returns whether the frame entered the native send queue.
+    var sendFrame: ((Data) -> Bool)?
     var onStatus: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onStats: ((UInt64, UInt64) -> Void)?
@@ -147,6 +148,9 @@ final class AudioBridge {
                                     options: [.defaultToSpeaker, .allowBluetooth])
             try session.setPreferredSampleRate(sampleRate)
             try session.setPreferredIOBufferDuration(0.02)
+            if session.maximumInputNumberOfChannels > 0 {
+                try session.setPreferredInputNumberOfChannels(1)
+            }
             try session.setActive(true)
         } catch {
             reportError("音频会话启动失败：\(error.localizedDescription)")
@@ -226,7 +230,8 @@ final class AudioBridge {
         }
 
         let input = engine.inputNode
-        let inputFormat = input.inputFormat(forBus: 0)
+        // Microphone samples are exposed on the input node's output scope.
+        let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             reportError("当前音频路由没有可用的麦克风输入")
             return
@@ -236,6 +241,11 @@ final class AudioBridge {
             return
         }
         inputConverter = converter
+
+        // Rebuild the graph with the microphone branch attached.
+        if engine.isRunning {
+            engine.stop()
+        }
         input.installTap(onBus: 0, bufferSize: 960, format: inputFormat) { [weak self] buffer, _ in
             self?.capture(buffer)
         }
@@ -243,15 +253,12 @@ final class AudioBridge {
         tapInstalled = true
         lock.unlock()
 
-        // The iOS 14 permission sheet may stop the graph.
-        if !engine.isRunning {
-            engine.prepare()
-            do {
-                try engine.start()
-            } catch {
-                reportError("授权后音频引擎重启失败：\(error.localizedDescription)")
-                return
-            }
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            reportError("麦克风接入后音频引擎重启失败：\(error.localizedDescription)")
+            return
         }
         reportStatus("语音已就绪 · 低延迟播放")
     }
@@ -319,9 +326,13 @@ final class AudioBridge {
                 }
             }
             if written > 0 {
-                sentFrames &+= 1
-                if sentFrames % 25 == 0 { reportStatsLocked() }
-                sendFrame?(Data(output[0..<Int(written)]))
+                let queued = sendFrame?(Data(output[0..<Int(written)])) ?? false
+                if queued {
+                    sentFrames &+= 1
+                    if sentFrames % 25 == 0 { reportStatsLocked() }
+                } else {
+                    reportError("麦克风已编码，但语音帧未进入发送队列")
+                }
             }
         }
     }

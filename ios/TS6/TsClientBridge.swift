@@ -102,11 +102,13 @@ final class TsClientBridge {
 
     // MARK: - Actions
 
-    func sendAudio(_ data: Data) {
-        guard let client = client else { return }
-        data.withUnsafeBytes { raw in
-            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-            _ = tslib_client_send_audio_async(client, base, UInt(data.count), 4)
+    @discardableResult
+    func sendAudio(_ data: Data) -> Bool {
+        guard let client = client, !data.isEmpty else { return false }
+        return data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return false }
+            let result = tslib_client_send_audio_async(client, base, UInt(data.count), 4)
+            return result.rawValue == 0
         }
     }
 
