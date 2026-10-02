@@ -11,6 +11,8 @@ ios/build/
 TS3RustClient_iOS/rust_lib/target/
 TS3RustClient_iOS/TS3Client/Resources/libs/libts3_rust.a
 TS3RustClient_iOS/build/
+*.ipa
+*-app.zip
 
 # Reference clones (not part of this project)
 reference/

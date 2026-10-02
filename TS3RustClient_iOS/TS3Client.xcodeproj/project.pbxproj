@@ -342,7 +342,7 @@
 					"-framework",
 					CoreFoundation,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.TS3RustClient;
+				PRODUCT_BUNDLE_IDENTIFIER = com.akisenn.ts3rustclient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = TS3Client/TS3RustClient-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;
@@ -381,7 +381,7 @@
 					"-framework",
 					CoreFoundation,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.TS3RustClient;
+				PRODUCT_BUNDLE_IDENTIFIER = com.akisenn.ts3rustclient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = TS3Client/TS3RustClient-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;

@@ -3,7 +3,8 @@
 在 Windows 上开发、通过 GitHub Actions 的 macOS runner 编译的 iOS TeamSpeak
 客户端。底层协议与语音完全使用开源的 Rust 库 [tslib](https://github.com/flamme-demon/tslib_multi)
 （核心协议来自 [tsclientlib](https://github.com/ReSpeak/tsclientlib)），
-**不需要 TeamSpeak 官方 SDK 授权**，可以连接自建 TeamSpeak 3/6 服务器。
+**不需要 TeamSpeak 官方 SDK 授权**，重点兼容自建 TeamSpeak 3 服务器；
+底层协议库也保留 TeamSpeak 6 兼容能力。
 
 产物是 ad-hoc 签名的 `TS6-iOS.ipa`，适合用 TrollStore（巨魔商店）直接安装；
 同时保留 `TS6-iOS-app.zip`（内含 `TS6.app`），供越狱设备用 Filza/SSH 安装。
@@ -87,6 +88,8 @@ xcodebuild -project TS6.xcodeproj -target TS6 -configuration Release \
 - 连接自建 TeamSpeak 3/6 服务器（地址/端口/昵称/服务器密码/默认频道）
 - 频道树 + 用户列表，点击频道切换，说话状态高亮
 - Opus 语音收发（48 kHz 单声道，20 ms 帧），PTT 按住说话 + 麦克风开关
+- iOS 输入路由自动重采样到 48 kHz；扬声器与蓝牙语音路由可用
+- 接收端按说话者维护 FIFO，逐帧解码混音，避免连续语音包相互叠加
 - 频道文本聊天
 - 身份持久化
 
@@ -95,6 +98,14 @@ xcodebuild -project TS6.xcodeproj -target TS6 -configuration Release \
 - 无文件管理器、私聊 UI、服务器管理命令
 - 断线不会自动重连
 - 播放是简单的 20 ms 帧调度，未做抖动缓冲优化
+
+## iPhone XR / arm64e 说明
+
+iPhone XR（A12）运行 iOS 14.8 时属于 arm64e 设备，但普通第三方 App 的兼容
+目标应编译为 `arm64`。GitHub Actions 使用 Rust 的稳定目标
+`aarch64-apple-ios` 和 Xcode 的 `iphoneos` SDK，生成的 App 可由 iOS 14.8
+arm64e 设备正常加载；强行生成仅 arm64e 的 App 反而会降低兼容性，并需要
+非稳定 Rust target 与额外签名条件。
 
 ## 许可证说明
 

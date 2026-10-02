@@ -85,6 +85,7 @@ final class AppModel: ObservableObject {
         selfId = nil
         currentChannelId = nil
         talking.removeAll()
+        micEnabled = false
         audio.stop()
     }
 
