@@ -187,7 +187,9 @@ final class TsClientBridge {
                let codec = (obj["codec"] as? NSNumber)?.intValue,
                let b64 = obj["data"] as? String,
                let audio = Data(base64Encoded: b64) {
-                DispatchQueue.main.async { [weak self] in self?.onAudio?(uid, codec, audio) }
+                // Audio is already on the serial poll queue. Keep it off the
+                // main thread so UI work cannot add audible latency/jitter.
+                onAudio?(uid, codec, audio)
             }
         case "updated":
             refreshSnapshot()

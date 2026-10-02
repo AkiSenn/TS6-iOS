@@ -52,6 +52,9 @@ final class AppModel: ObservableObject {
         bridge.onAudio = { [weak self] uid, codec, data in
             self?.audio.handleIncoming(userId: uid, codec: codec, data: data)
         }
+        audio.sendFrame = { [weak self] data in
+            self?.bridge.sendAudio(data)
+        }
         audio.onStatus = { [weak self] message in
             self?.audioStatus = message
         }

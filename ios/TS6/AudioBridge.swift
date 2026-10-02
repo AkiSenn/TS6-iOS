@@ -1,37 +1,90 @@
 import AVFoundation
 
-/// Captures the microphone (48 kHz mono), encodes to Opus via the Rust FFI,
-/// and decodes/mixes incoming frames for playback.
+/// Fixed-size PCM jitter buffer. All access is protected by `pcmLock`.
+private final class PCMQueue {
+    private var storage: [Float]
+    private var readIndex = 0
+    private var writeIndex = 0
+    private(set) var count = 0
+    private var primed = false
+    private let primeFrames: Int
+
+    init(capacity: Int, primeFrames: Int) {
+        storage = [Float](repeating: 0, count: capacity)
+        self.primeFrames = primeFrames
+    }
+
+    func write(_ samples: [Float]) {
+        for sample in samples {
+            if count == storage.count {
+                // Bound latency by discarding the oldest sample on overflow.
+                readIndex = (readIndex + 1) % storage.count
+                count -= 1
+            }
+            storage[writeIndex] = sample
+            writeIndex = (writeIndex + 1) % storage.count
+            count += 1
+        }
+    }
+
+    @discardableResult
+    func mix(into output: UnsafeMutablePointer<Float>, frameCount: Int) -> Bool {
+        if !primed {
+            guard count >= max(primeFrames, frameCount) else { return false }
+            primed = true
+        }
+        guard count >= frameCount else {
+            // Rebuffer after underrun instead of playing broken fragments.
+            primed = false
+            return false
+        }
+        for i in 0..<frameCount {
+            output[i] += storage[readIndex]
+            readIndex = (readIndex + 1) % storage.count
+            count -= 1
+        }
+        return true
+    }
+}
+
+private struct DecoderState {
+    let pointer: UnsafeMutablePointer<TsOpus>
+    let channels: Int
+}
+
+/// AVAudioEngine capture plus pull-based, low-latency playback.
 ///
-/// Threading rules:
-/// - The capture tap runs on a real-time audio thread; it only does cheap
-///   work and fires the (non-blocking) async send into the Rust worker.
-/// - All native handle access (opus/decoders) is serialized with `lock` so
-///   `stop()` can never race a callback into a use-after-free.
+/// Incoming Opus is decoded on a serial queue into a bounded 60 ms jitter
+/// buffer. AVAudioSourceNode pulls exactly the PCM frame count requested by
+/// the hardware. This avoids timer drift and accumulated scheduling delay.
 final class AudioBridge {
     private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    private var sourceNode: AVAudioSourceNode?
+    private var sourceAttached = false
     private var format: AVAudioFormat!
     private var inputConverter: AVAudioConverter?
     private var opus: UnsafeMutablePointer<TsOpus>?
-    private var decoders: [UInt16: UnsafeMutablePointer<TsOpus>] = [:]
 
+    /// State/capture lock. The render callback never takes this lock.
     private let lock = NSLock()
-    /// Encoded packets are FIFO per speaker.  Draining the whole input array
-    /// into one mix buffer would overlap consecutive 20 ms packets and make
-    /// speech sound accelerated/distorted.
-    private var pending: [UInt16: [Data]] = [:]
     private var muted = true
-    private let playbackQueue = DispatchQueue(label: "tslib.audio")
-    private var playing = false
     private var started = false
-    private var playerAttached = false
     private var tapInstalled = false
+    private var captureAccumulator = [Float]()
     private var sentFrames: UInt64 = 0
     private var receivedFrames: UInt64 = 0
     private var unsupportedCodecs = Set<Int>()
+    private var restartScheduled = false
+    private var notificationTokens: [NSObjectProtocol] = []
 
-    private var captureAccumulator = [Float]()
+    /// Decoder handles live only on this queue. Opus decode therefore never
+    /// blocks the real-time render callback.
+    private let decoderQueue = DispatchQueue(label: "tslib.audio.decode", qos: .userInteractive)
+    private var decoders: [UInt16: DecoderState] = [:]
+
+    /// The render callback holds this only while copying decoded PCM.
+    private let pcmLock = NSLock()
+    private var pcmQueues: [UInt16: PCMQueue] = [:]
 
     var sendFrame: ((Data) -> Void)?
     var onStatus: ((String) -> Void)?
@@ -39,7 +92,33 @@ final class AudioBridge {
     var onStats: ((UInt64, UInt64) -> Void)?
 
     private let sampleRate = 48000.0
-    private let frameSamples = 960 // 20 ms @ 48 kHz
+    private let frameSamples = 960        // 20 ms capture frames
+    private let maxDecodeFrames = 5760   // Opus maximum: 120 ms @ 48 kHz
+    private let jitterPrimeFrames = 2880 // 60 ms
+    private let jitterCapacity = 11520   // 240 ms hard latency cap
+
+    init() {
+        let center = NotificationCenter.default
+        let interruption = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            if type == .ended {
+                self?.scheduleEngineRestart()
+            }
+        }
+        let routeChange = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleEngineRestart()
+        }
+        notificationTokens = [interruption, routeChange]
+    }
 
     func start() {
         lock.lock()
@@ -50,9 +129,7 @@ final class AudioBridge {
         started = true
         lock.unlock()
 
-        // Playback must not depend on microphone permission.  The old code
-        // initialized the entire engine only after permission was granted,
-        // which also made incoming voices silent when permission was denied.
+        // Playback is initialized regardless of microphone permission.
         DispatchQueue.main.async { [weak self] in
             self?.setupPlaybackAndRequestCapture()
         }
@@ -72,7 +149,6 @@ final class AudioBridge {
             try session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true)
         } catch {
-            NSLog("TS6: audio session setup failed: \(error)")
             reportError("音频会话启动失败：\(error.localizedDescription)")
         }
 
@@ -82,23 +158,27 @@ final class AudioBridge {
         }
         format = fmt
 
-        if !playerAttached {
-            engine.attach(player)
-            playerAttached = true
+        if sourceNode == nil {
+            sourceNode = AVAudioSourceNode(format: fmt) { [weak self] _, _, frameCount, audioList in
+                self?.render(frameCount: Int(frameCount), audioList: audioList) ?? noErr
+            }
         }
-        engine.connect(player, to: engine.mainMixerNode, format: fmt)
+        if let sourceNode = sourceNode {
+            if !sourceAttached {
+                engine.attach(sourceNode)
+                sourceAttached = true
+            }
+            engine.connect(sourceNode, to: engine.mainMixerNode, format: fmt)
+        }
 
         engine.prepare()
         do {
             try engine.start()
-            player.play()
             reportStatus("扬声器已启动，正在检查麦克风权限…")
         } catch {
-            NSLog("TS6: audio engine failed to start: \(error)")
             reportError("扬声器启动失败：\(error.localizedDescription)")
             return
         }
-        startPlayback()
 
         switch session.recordPermission {
         case .granted:
@@ -145,8 +225,6 @@ final class AudioBridge {
             return
         }
 
-        // Use the node's native format for the tap, then resample to 48 kHz.
-        // Installing a 48 kHz tap directly can crash on Bluetooth/44.1 kHz routes.
         let input = engine.inputNode
         let inputFormat = input.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
@@ -165,8 +243,7 @@ final class AudioBridge {
         tapInstalled = true
         lock.unlock()
 
-        // The system permission sheet can interrupt/stop the audio graph on
-        // iOS 14. Restart it after permission is granted if necessary.
+        // The iOS 14 permission sheet may stop the graph.
         if !engine.isRunning {
             engine.prepare()
             do {
@@ -176,16 +253,12 @@ final class AudioBridge {
                 return
             }
         }
-        if !player.isPlaying {
-            player.play()
-        }
-        reportStatus("语音已就绪")
+        reportStatus("语音已就绪 · 低延迟播放")
     }
 
     private func capture(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
         defer { lock.unlock() }
-
         guard started, !muted, let opus = opus else { return }
 
         let captureBuffer: AVAudioPCMBuffer
@@ -212,57 +285,48 @@ final class AudioBridge {
                 inputStatus.pointee = .haveData
                 return buffer
             }
-            guard status != .error, conversionError == nil else {
-                NSLog("TS6: input conversion failed: \(conversionError?.localizedDescription ?? "unknown")")
-                return
-            }
+            guard status != .error, conversionError == nil else { return }
             captureBuffer = converted
         }
 
-        guard let channelsPtr = captureBuffer.floatChannelData else { return }
-
+        guard let channelsPointer = captureBuffer.floatChannelData else { return }
         let channels = Int(captureBuffer.format.channelCount)
         let frames = Int(captureBuffer.frameLength)
         guard channels > 0, frames > 0 else { return }
 
-        // Convert the chunk to mono Float and accumulate into whole frames.
         captureAccumulator.reserveCapacity(captureAccumulator.count + frames)
         for i in 0..<frames {
-            var v: Float = 0
-            for c in 0..<channels {
-                v += channelsPtr[c][i]
+            var value: Float = 0
+            for channel in 0..<channels {
+                value += channelsPointer[channel][i]
             }
-            captureAccumulator.append(v / Float(channels))
+            captureAccumulator.append(value / Float(channels))
         }
 
         while captureAccumulator.count >= frameSamples {
             var pcm = [Int16](repeating: 0, count: frameSamples)
             for i in 0..<frameSamples {
-                var v = captureAccumulator[i]
-                if v > 1 { v = 1 } else if v < -1 { v = -1 }
-                pcm[i] = Int16(v * 32767)
+                let value = max(-1, min(1, captureAccumulator[i]))
+                pcm[i] = Int16(value * 32767)
             }
             captureAccumulator.removeFirst(frameSamples)
 
-            var out = [UInt8](repeating: 0, count: 2048)
-            let written = pcm.withUnsafeBufferPointer { p in
-                out.withUnsafeMutableBufferPointer { o in
-                    tslib_opus_encode(opus, p.baseAddress, UInt(frameSamples),
-                                      o.baseAddress, UInt(o.count))
+            var output = [UInt8](repeating: 0, count: 2048)
+            let written = pcm.withUnsafeBufferPointer { pcmPointer in
+                output.withUnsafeMutableBufferPointer { outputPointer in
+                    tslib_opus_encode(opus, pcmPointer.baseAddress, UInt(frameSamples),
+                                      outputPointer.baseAddress, UInt(outputPointer.count))
                 }
             }
             if written > 0 {
                 sentFrames &+= 1
-                if sentFrames % 25 == 0 {
-                    reportStatsLocked()
-                }
-                sendFrame?(Data(out[0..<Int(written)]))
+                if sentFrames % 25 == 0 { reportStatsLocked() }
+                sendFrame?(Data(output[0..<Int(written)]))
             }
         }
     }
 
     func handleIncoming(userId: UInt16, codec: Int, data: Data) {
-        // Only Opus voice / music is supported.
         guard codec == 4 || codec == 5 else {
             lock.lock()
             let isNew = unsupportedCodecs.insert(codec).inserted
@@ -272,16 +336,134 @@ final class AudioBridge {
             }
             return
         }
+
         lock.lock()
+        guard started else {
+            lock.unlock()
+            return
+        }
         receivedFrames &+= 1
-        pending[userId, default: []].append(data)
-        if pending[userId]!.count > 50 {
-            pending[userId]!.removeFirst(pending[userId]!.count - 50)
-        }
-        if receivedFrames % 25 == 0 {
-            reportStatsLocked()
-        }
+        if receivedFrames % 25 == 0 { reportStatsLocked() }
         lock.unlock()
+
+        if !engine.isRunning {
+            scheduleEngineRestart()
+        }
+
+        decoderQueue.async { [weak self] in
+            self?.decodeIncoming(userId: userId, codec: codec, data: data)
+        }
+    }
+
+    private func decodeIncoming(userId: UInt16, codec: Int, data: Data) {
+        lock.lock()
+        let isStarted = started
+        lock.unlock()
+        guard isStarted else { return }
+
+        // Opus Voice is mono; Opus Music is conventionally stereo in TS3.
+        let channels = codec == 5 ? 2 : 1
+        let decoder: DecoderState
+        if let existing = decoders[userId], existing.channels == channels {
+            decoder = existing
+        } else {
+            if let existing = decoders.removeValue(forKey: userId) {
+                tslib_opus_destroy(existing.pointer)
+            }
+            guard let pointer = tslib_opus_create(48000, Int32(channels), 48000, 20) else {
+                reportError("无法为用户 \(userId) 创建 Opus 解码器")
+                return
+            }
+            decoder = DecoderState(pointer: pointer, channels: channels)
+            decoders[userId] = decoder
+        }
+
+        var pcm = [Int16](repeating: 0, count: maxDecodeFrames * channels)
+        let decoded = data.withUnsafeBytes { raw -> Int32 in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+            return pcm.withUnsafeMutableBufferPointer { pointer in
+                tslib_opus_decode(decoder.pointer, base, UInt(data.count),
+                                  pointer.baseAddress, UInt(pointer.count))
+            }
+        }
+        guard decoded > 0 else {
+            reportError("Opus 解码失败（用户 \(userId)，数据 \(data.count) 字节）")
+            return
+        }
+
+        let totalSamples = min(Int(decoded), pcm.count)
+        let outputFrames = totalSamples / channels
+        var mono = [Float](repeating: 0, count: outputFrames)
+        if channels == 1 {
+            for i in 0..<outputFrames {
+                mono[i] = Float(pcm[i]) / 32767.0
+            }
+        } else {
+            for i in 0..<outputFrames {
+                let left = Float(pcm[i * 2])
+                let right = Float(pcm[i * 2 + 1])
+                mono[i] = (left + right) / 65534.0
+            }
+        }
+
+        pcmLock.lock()
+        let queue = pcmQueues[userId] ?? PCMQueue(capacity: jitterCapacity,
+                                                  primeFrames: jitterPrimeFrames)
+        pcmQueues[userId] = queue
+        queue.write(mono)
+        pcmLock.unlock()
+    }
+
+    private func render(frameCount: Int,
+                        audioList: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
+        let buffers = UnsafeMutableAudioBufferListPointer(audioList)
+        guard buffers.count > 0, let firstData = buffers[0].mData else { return noErr }
+        let output = firstData.assumingMemoryBound(to: Float.self)
+        output.initialize(repeating: 0, count: frameCount)
+
+        pcmLock.lock()
+        var mixedQueues = 0
+        for queue in pcmQueues.values {
+            if queue.mix(into: output, frameCount: frameCount) {
+                mixedQueues += 1
+            }
+        }
+        pcmLock.unlock()
+
+        // Avoid hard clipping when several users speak at once.
+        let gain: Float = mixedQueues > 1 ? 1.0 / sqrt(Float(mixedQueues)) : 1.0
+        for i in 0..<frameCount {
+            output[i] = max(-1, min(1, output[i] * gain))
+        }
+        return noErr
+    }
+
+    private func scheduleEngineRestart() {
+        lock.lock()
+        guard started, !restartScheduled else {
+            lock.unlock()
+            return
+        }
+        restartScheduled = true
+        lock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let shouldRestart = self.started
+            self.restartScheduled = false
+            self.lock.unlock()
+            guard shouldRestart, !self.engine.isRunning else { return }
+
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+                self.engine.prepare()
+                try self.engine.start()
+                self.reportStatus("音频引擎已自动恢复")
+            } catch {
+                self.reportError("音频引擎恢复失败：\(error.localizedDescription)")
+            }
+        }
     }
 
     func setMuted(_ muted: Bool) {
@@ -309,132 +491,47 @@ final class AudioBridge {
         DispatchQueue.main.async { [weak self] in self?.onError?(message) }
     }
 
-    private func startPlayback() {
-        lock.lock()
-        let shouldRun = started && !playing
-        if shouldRun {
-            playing = true
-        }
-        lock.unlock()
-        guard shouldRun else { return }
-
-        playbackQueue.async { [weak self] in
-            guard let self = self else { return }
-            while true {
-                self.lock.lock()
-                let shouldContinue = self.playing
-                self.lock.unlock()
-                guard shouldContinue else { break }
-                self.processPlayback()
-                usleep(20_000)
-            }
-        }
-    }
-
-    private func processPlayback() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard started, !pending.isEmpty, let format = format else { return }
-
-        var mix = [Float](repeating: 0, count: frameSamples)
-        var hasData = false
-
-        // Pop at most one packet per speaker per 20 ms mix tick. Packets from
-        // different speakers are mixed together; consecutive packets remain
-        // ordered for the following ticks.
-        let userIds = Array(pending.keys)
-        for uid in userIds {
-            guard var queue = pending[uid], !queue.isEmpty else { continue }
-            let data = queue.removeFirst()
-            if queue.isEmpty {
-                pending.removeValue(forKey: uid)
-            } else {
-                pending[uid] = queue
-            }
-            guard let dec = decoderLocked(for: uid) else { continue }
-            var pcm = [Int16](repeating: 0, count: frameSamples)
-            let capacity = pcm.count
-            let samples = data.withUnsafeBytes { raw -> Int32 in
-                guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
-                return pcm.withUnsafeMutableBufferPointer { p in
-                    tslib_opus_decode(dec, base, UInt(data.count),
-                                      p.baseAddress, UInt(capacity))
-                }
-            }
-            guard samples > 0 else { continue }
-            let n = min(Int(samples), frameSamples)
-            for i in 0..<n {
-                mix[i] += Float(pcm[i]) / 32767.0
-            }
-            hasData = true
-        }
-
-        guard hasData else { return }
-        guard engine.isRunning else {
-            reportError("收到语音包，但音频引擎已停止。请重新连接服务器。")
-            return
-        }
-        if !player.isPlaying {
-            player.play()
-        }
-        for i in 0..<frameSamples {
-            mix[i] = max(-1, min(1, mix[i]))
-        }
-
-        let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameSamples))!
-        buf.frameLength = AVAudioFrameCount(frameSamples)
-        mix.withUnsafeBufferPointer { mp in
-            guard let dst = buf.floatChannelData?[0] else { return }
-            dst.assign(from: mp.baseAddress!, count: frameSamples)
-        }
-        player.scheduleBuffer(buf)
-    }
-
-    /// Caller must hold `lock`.
-    private func decoderLocked(for uid: UInt16) -> UnsafeMutablePointer<TsOpus>? {
-        if let d = decoders[uid] { return d }
-        guard let d = tslib_opus_create(48000, 1, 48000, 20) else { return nil }
-        decoders[uid] = d
-        return d
-    }
-
     func stop() {
         lock.lock()
-        playing = false
         started = false
         muted = true
         let removeTap = tapInstalled
         tapInstalled = false
         lock.unlock()
 
-        // Do not hold the codec lock while stopping AVAudioEngine: stopping can
-        // wait for an in-flight tap callback, which also needs this lock.
         engine.stop()
-        player.stop()
         if removeTap {
             engine.inputNode.removeTap(onBus: 0)
         }
 
         lock.lock()
-        if let o = opus {
-            tslib_opus_destroy(o)
+        if let encoder = opus {
+            tslib_opus_destroy(encoder)
             opus = nil
         }
-        for d in decoders.values {
-            tslib_opus_destroy(d)
-        }
-        decoders.removeAll()
-        pending.removeAll()
         captureAccumulator.removeAll()
         sentFrames = 0
         receivedFrames = 0
         unsupportedCodecs.removeAll()
+        restartScheduled = false
         inputConverter = nil
         lock.unlock()
+
+        decoderQueue.sync {
+            for decoder in decoders.values {
+                tslib_opus_destroy(decoder.pointer)
+            }
+            decoders.removeAll()
+        }
+        pcmLock.lock()
+        pcmQueues.removeAll()
+        pcmLock.unlock()
     }
 
     deinit {
+        for token in notificationTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
         stop()
     }
 }

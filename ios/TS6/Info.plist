@@ -17,13 +17,19 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.1</string>
+	<string>1.0.2</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>需要麦克风权限以进行 TeamSpeak 语音通话</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>需要访问本地网络以连接局域网内的 TeamSpeak 3/6 服务器并收发语音</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ts3._udp</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
