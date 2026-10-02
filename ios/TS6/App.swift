@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Network
+import UIKit
 
 /// iOS 14 has no public "request local-network permission" API. Starting a
 /// Bonjour browser is Apple's supported way to make the system evaluate the
@@ -83,5 +84,67 @@ struct ContentView: View {
         } else {
             ConnectionView(model: model)
         }
+    }
+}
+
+struct AppBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.035, green: 0.055, blue: 0.13),
+                    Color(red: 0.12, green: 0.08, blue: 0.25),
+                    Color(red: 0.03, green: 0.16, blue: 0.22)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Circle()
+                .fill(Color.blue.opacity(0.22))
+                .frame(width: 300, height: 300)
+                .offset(x: 150, y: -260)
+                .blur(radius: 28)
+            Circle()
+                .fill(Color.purple.opacity(0.18))
+                .frame(width: 260, height: 260)
+                .offset(x: -170, y: 310)
+                .blur(radius: 32)
+        }
+        .edgesIgnoringSafeArea(.all)
+    }
+}
+
+struct BlurView: UIViewRepresentable {
+    let style: UIBlurEffect.Style
+
+    func makeUIView(context: Context) -> UIVisualEffectView {
+        UIVisualEffectView(effect: UIBlurEffect(style: style))
+    }
+
+    func updateUIView(_ uiView: UIVisualEffectView, context: Context) {}
+}
+
+struct GlassPanel<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(14)
+            .background(
+                ZStack {
+                    BlurView(style: .systemUltraThinMaterialDark)
+                    Color.white.opacity(0.055)
+                }
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 0.7)
+            )
+            .shadow(color: Color.black.opacity(0.2), radius: 16, y: 8)
     }
 }

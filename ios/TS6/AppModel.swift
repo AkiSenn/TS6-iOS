@@ -2,6 +2,15 @@ import Foundation
 import Combine
 import UIKit
 
+private struct ConnectionRequest {
+    var address: String
+    var port: UInt16
+    var nickname: String
+    var serverPassword: String
+    var channel: String
+    var channelPassword: String
+}
+
 final class AppModel: ObservableObject {
     @Published var state: ConnState = .disconnected
     @Published var serverName = ""
@@ -16,9 +25,11 @@ final class AppModel: ObservableObject {
     @Published var audioStatus = "音频未启动"
     @Published var sentAudioFrames: UInt64 = 0
     @Published var receivedAudioFrames: UInt64 = 0
+    @Published var forceLoginNickname: String?
 
     let bridge = TsClientBridge()
     let audio = AudioBridge()
+    private var lastConnection: ConnectionRequest?
 
     init() {
         bridge.onConnected = { [weak self] name in
@@ -32,7 +43,13 @@ final class AppModel: ObservableObject {
             self?.teardown()
         }
         bridge.onError = { [weak self] msg in
-            self?.errorMessage = msg
+            guard let self = self else { return }
+            let failedWhileConnecting = self.state == .connecting
+            self.errorMessage = msg
+            if failedWhileConnecting, let request = self.lastConnection {
+                self.state = .disconnected
+                self.forceLoginNickname = self.nextNickname(after: request.nickname)
+            }
         }
         bridge.onSnapshot = { [weak self] snap in
             guard let self = self else { return }
@@ -66,6 +83,10 @@ final class AppModel: ObservableObject {
             self?.sentAudioFrames = sent
             self?.receivedAudioFrames = received
         }
+        audio.onLocalTalk = { [weak self] active in
+            guard let self = self, let id = self.selfId else { return }
+            if active { self.talking.insert(id) } else { self.talking.remove(id) }
+        }
 
         // Clean up the TeamSpeak connection on app termination so the server
         // doesn't keep a stale client alive after we exit.
@@ -76,17 +97,58 @@ final class AppModel: ObservableObject {
         ) { [weak self] _ in
             self?.bridge.disconnect()
         }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard self?.isConnected == true else { return }
+            self?.audio.prepareForBackground()
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard self?.isConnected == true else { return }
+            self?.audio.prepareForBackground()
+        }
     }
 
     var isConnected: Bool { state == .connected }
 
     func connect(address: String, port: UInt16, nickname: String,
                  serverPassword: String, channel: String, channelPassword: String) {
+        lastConnection = ConnectionRequest(address: address, port: port, nickname: nickname,
+                                           serverPassword: serverPassword, channel: channel,
+                                           channelPassword: channelPassword)
+        forceLoginNickname = nil
         errorMessage = nil
         state = .connecting
         bridge.connect(address: address, port: port, nickname: nickname,
                        serverPassword: serverPassword, channel: channel,
                        channelPassword: channelPassword)
+    }
+
+    func forceLogin() {
+        guard var request = lastConnection, let nickname = forceLoginNickname else { return }
+        request.nickname = nickname
+        UserDefaults.standard.set(nickname, forKey: "lastNickname")
+        connect(address: request.address, port: request.port, nickname: nickname,
+                serverPassword: request.serverPassword, channel: request.channel,
+                channelPassword: request.channelPassword)
+    }
+
+    func dismissForceLogin() {
+        forceLoginNickname = nil
+    }
+
+    private func nextNickname(after nickname: String) -> String {
+        if let range = nickname.range(of: #"\((\d+)\)$"#, options: .regularExpression),
+           let number = Int(nickname[range].dropFirst().dropLast()) {
+            return String(nickname[..<range.lowerBound]) + "(\(number + 1))"
+        }
+        return nickname + "(1)"
     }
 
     func disconnect() {

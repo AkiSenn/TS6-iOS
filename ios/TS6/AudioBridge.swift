@@ -76,6 +76,8 @@ final class AudioBridge {
     private var unsupportedCodecs = Set<Int>()
     private var restartScheduled = false
     private var notificationTokens: [NSObjectProtocol] = []
+    private var localTalking = false
+    private var quietCaptureFrames = 0
 
     /// Decoder handles live only on this queue. Opus decode therefore never
     /// blocks the real-time render callback.
@@ -91,6 +93,7 @@ final class AudioBridge {
     var onStatus: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onStats: ((UInt64, UInt64) -> Void)?
+    var onLocalTalk: ((Bool) -> Void)?
 
     private let sampleRate = 48000.0
     private let frameSamples = 960        // 20 ms capture frames
@@ -321,13 +324,17 @@ final class AudioBridge {
         guard channels > 0, frames > 0 else { return }
 
         captureAccumulator.reserveCapacity(captureAccumulator.count + frames)
+        var energy: Float = 0
         for i in 0..<frames {
             var value: Float = 0
             for channel in 0..<channels {
                 value += channelsPointer[channel][i]
             }
-            captureAccumulator.append(value / Float(channels))
+            value /= Float(channels)
+            energy += value * value
+            captureAccumulator.append(value)
         }
+        updateLocalTalkLocked(rms: sqrt(energy / Float(frames)), frames: frames)
 
         while captureAccumulator.count >= frameSamples {
             var pcm = [Int16](repeating: 0, count: frameSamples)
@@ -500,13 +507,47 @@ final class AudioBridge {
         lock.lock()
         self.muted = muted
         let captureReady = tapInstalled && opus != nil
+        let wasTalking = localTalking
+        if muted {
+            localTalking = false
+            quietCaptureFrames = 0
+        }
         lock.unlock()
+        if muted && wasTalking {
+            DispatchQueue.main.async { [weak self] in self?.onLocalTalk?(false) }
+        }
         if !muted && !captureReady {
             reportStatus("正在重新初始化麦克风…")
             DispatchQueue.main.async { [weak self] in
                 _ = self?.setupCapture()
             }
         }
+    }
+
+    private func updateLocalTalkLocked(rms: Float, frames: Int) {
+        if rms >= 0.012 {
+            quietCaptureFrames = 0
+            if !localTalking {
+                localTalking = true
+                DispatchQueue.main.async { [weak self] in self?.onLocalTalk?(true) }
+            }
+        } else if localTalking {
+            quietCaptureFrames += frames
+            if quietCaptureFrames >= 16_800 {
+                localTalking = false
+                quietCaptureFrames = 0
+                DispatchQueue.main.async { [weak self] in self?.onLocalTalk?(false) }
+            }
+        }
+    }
+
+    func prepareForBackground() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            reportError("后台音频会话启动失败：\(error.localizedDescription)")
+        }
+        if !engine.isRunning { scheduleEngineRestart() }
     }
 
     /// Caller must hold `lock`.
@@ -543,12 +584,19 @@ final class AudioBridge {
             opus = nil
         }
         captureAccumulator.removeAll()
+        let wasTalking = localTalking
+        localTalking = false
+        quietCaptureFrames = 0
         sentFrames = 0
         receivedFrames = 0
         unsupportedCodecs.removeAll()
         restartScheduled = false
         inputConverter = nil
         lock.unlock()
+
+        if wasTalking {
+            DispatchQueue.main.async { [weak self] in self?.onLocalTalk?(false) }
+        }
 
         decoderQueue.sync {
             for decoder in decoders.values {
