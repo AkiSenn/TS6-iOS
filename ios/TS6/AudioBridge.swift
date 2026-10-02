@@ -164,6 +164,21 @@ final class AudioBridge {
         lock.lock()
         tapInstalled = true
         lock.unlock()
+
+        // The system permission sheet can interrupt/stop the audio graph on
+        // iOS 14. Restart it after permission is granted if necessary.
+        if !engine.isRunning {
+            engine.prepare()
+            do {
+                try engine.start()
+            } catch {
+                reportError("授权后音频引擎重启失败：\(error.localizedDescription)")
+                return
+            }
+        }
+        if !player.isPlaying {
+            player.play()
+        }
         reportStatus("语音已就绪")
     }
 
@@ -356,6 +371,13 @@ final class AudioBridge {
         }
 
         guard hasData else { return }
+        guard engine.isRunning else {
+            reportError("收到语音包，但音频引擎已停止。请重新连接服务器。")
+            return
+        }
+        if !player.isPlaying {
+            player.play()
+        }
         for i in 0..<frameSamples {
             mix[i] = max(-1, min(1, mix[i]))
         }
