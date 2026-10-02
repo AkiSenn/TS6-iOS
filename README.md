@@ -1,5 +1,9 @@
 # TS6 iOS
 
+<p align="center">
+  <img src="docs/ts6-icon-white.png" width="160" alt="TS6 iOS 图标">
+</p>
+
 适用于 iOS 14+ 的非官方 TeamSpeak 3/6 客户端，重点兼容 TeamSpeak 3 服务器。
 使用 Swift、AVAudioEngine、Rust `tslib` 和 Opus 构建，不包含 TeamSpeak 官方 SDK。
 
@@ -47,3 +51,7 @@ cargo test -p tslib-ios-ffi
 
 `tslib`、`tsclientlib`：MIT OR Apache-2.0；Opus：BSD-3-Clause。
 `YUAXI/TS6_Droid_CN` 仅作功能参考，本仓库未复制其 GPLv3 源码。
+
+## 免责声明
+
+本项目是独立开发的非官方社区客户端，与 TeamSpeak 及其公司不存在隶属、合作、授权或背书关系。TeamSpeak 名称、标识及相关商标归其权利人所有。

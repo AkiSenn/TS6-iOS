@@ -14,6 +14,7 @@
 		AA0000000000000000000105 /* AudioBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000205 /* AudioBridge.swift */; };
 		AA0000000000000000000106 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000206 /* ConnectionView.swift */; };
 		AA0000000000000000000107 /* ServerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000207 /* ServerView.swift */; };
+		AA0000000000000000000108 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000210 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,6 +27,7 @@
 		AA0000000000000000000207 /* ServerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000208 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA0000000000000000000209 /* TS6.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TS6.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000210 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +58,7 @@
 				AA0000000000000000000204 /* TsClientBridge.swift */,
 				AA0000000000000000000205 /* AudioBridge.swift */,
 				AA0000000000000000000404 /* Views */,
+				AA0000000000000000000210 /* Assets.xcassets */,
 				AA0000000000000000000208 /* Info.plist */,
 			);
 			path = TS6;
@@ -136,6 +139,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA0000000000000000000108 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -212,6 +216,7 @@
 		AA0000000000000000000803 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "";
 				CODE_SIGN_STYLE = Automatic;
@@ -251,6 +256,7 @@
 		AA0000000000000000000804 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "";
 				CODE_SIGN_STYLE = Automatic;
