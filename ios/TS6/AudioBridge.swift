@@ -175,26 +175,21 @@ final class AudioBridge {
             engine.connect(sourceNode, to: engine.mainMixerNode, format: fmt)
         }
 
-        engine.prepare()
-        do {
-            try engine.start()
-            reportStatus("扬声器已启动，正在检查麦克风权限…")
-        } catch {
-            reportError("扬声器启动失败：\(error.localizedDescription)")
-            return
-        }
-
         switch session.recordPermission {
         case .granted:
-            setupCapture()
+            if !setupCapture() {
+                startPlaybackOnly()
+            }
         case .denied:
+            startPlaybackOnly()
             reportError("麦克风权限被拒绝；可收听但不能发言。请到系统设置中允许麦克风。")
         case .undetermined:
+            startPlaybackOnly()
             session.requestRecordPermission { [weak self] granted in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     if granted {
-                        self.setupCapture()
+                        _ = self.setupCapture()
                     } else {
                         self.reportError("麦克风权限被拒绝；可收听但不能发言。请到系统设置中允许麦克风。")
                     }
@@ -205,17 +200,38 @@ final class AudioBridge {
         }
     }
 
-    private func setupCapture() {
+    private func startPlaybackOnly() {
+        guard !engine.isRunning else { return }
+        engine.prepare()
+        do {
+            try engine.start()
+            reportStatus("扬声器已启动")
+        } catch {
+            reportError("扬声器启动失败：\(error.localizedDescription)")
+        }
+    }
+
+    @discardableResult
+    private func setupCapture() -> Bool {
         lock.lock()
-        let shouldSetup = started && !tapInstalled
+        let isStarted = started
+        let alreadyReady = tapInstalled && opus != nil
         lock.unlock()
-        guard shouldSetup, let format = format else { return }
+        guard isStarted else { return false }
+        if alreadyReady {
+            if !engine.isRunning { scheduleEngineRestart() }
+            return true
+        }
+        guard let format = format else {
+            setCaptureFailure("音频格式尚未建立")
+            return false
+        }
 
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
-            reportError("麦克风音频会话启动失败：\(error.localizedDescription)")
-            return
+            setCaptureFailure("音频会话启动失败：\(error.localizedDescription)")
+            return false
         }
 
         lock.lock()
@@ -225,28 +241,26 @@ final class AudioBridge {
         let encoderReady = opus != nil
         lock.unlock()
         guard encoderReady else {
-            reportError("Opus 编码器创建失败")
-            return
+            setCaptureFailure("Opus 编码器创建失败")
+            return false
         }
 
         let input = engine.inputNode
-        // Microphone samples are exposed on the input node's output scope.
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            reportError("当前音频路由没有可用的麦克风输入")
-            return
+            setCaptureFailure("当前音频路由没有可用的输入")
+            return false
         }
         guard let converter = AVAudioConverter(from: inputFormat, to: format) else {
-            reportError("无法把麦克风格式转换为 48 kHz 单声道")
-            return
+            setCaptureFailure("无法转换麦克风音频格式")
+            return false
         }
         inputConverter = converter
 
-        // Rebuild the graph with the microphone branch attached.
         if engine.isRunning {
             engine.stop()
         }
-        input.installTap(onBus: 0, bufferSize: 960, format: inputFormat) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 960, format: nil) { [weak self] buffer, _ in
             self?.capture(buffer)
         }
         lock.lock()
@@ -257,10 +271,15 @@ final class AudioBridge {
         do {
             try engine.start()
         } catch {
-            reportError("麦克风接入后音频引擎重启失败：\(error.localizedDescription)")
-            return
+            setCaptureFailure("音频引擎启动失败：\(error.localizedDescription)")
+            return false
         }
         reportStatus("语音已就绪 · 低延迟播放")
+        return true
+    }
+
+    private func setCaptureFailure(_ message: String) {
+        reportError("麦克风未就绪：\(message)")
     }
 
     private func capture(_ buffer: AVAudioPCMBuffer) {
@@ -483,7 +502,10 @@ final class AudioBridge {
         let captureReady = tapInstalled && opus != nil
         lock.unlock()
         if !muted && !captureReady {
-            reportError("麦克风尚未就绪；请确认系统麦克风权限已开启。")
+            reportStatus("正在重新初始化麦克风…")
+            DispatchQueue.main.async { [weak self] in
+                _ = self?.setupCapture()
+            }
         }
     }
 
